@@ -30,7 +30,7 @@ from rest_framework.permissions import IsAuthenticated, AllowAny
 
 from .models import (
     HeroSection, FeaturesSection, FeatureItem,
-    Partner, FAQItem, Testimonial,
+    Partner, FAQItem, Testimonial, SiteSettings,
     SUPPORTED_LANGUAGES, DEFAULT_LANGUAGE
 )
 from .serializers import (
@@ -38,10 +38,12 @@ from .serializers import (
     PublicHeroSerializer, PublicFeaturesSectionSerializer,
     PublicPartnerSerializer, PublicFAQItemSerializer,
     PublicTestimonialSerializer, PublicLandingPageSerializer,
+    PublicSiteSettingsSerializer,
     # Admin serializers
     AdminHeroSerializer, AdminFeaturesSectionSerializer,
     AdminFeatureItemSerializer, AdminPartnerSerializer,
     AdminFAQItemSerializer, AdminTestimonialSerializer,
+    AdminSiteSettingsSerializer,
     BulkOrderUpdateSerializer
 )
 from .permissions import IsAdminOrSuperAdmin, IsAdminOrReadOnly, PublicReadOnly
@@ -101,6 +103,10 @@ class PublicLandingPageView(LanguageMixin, APIView):
         faq = FAQItem.objects.filter(is_active=True).order_by('order')
         testimonials = Testimonial.objects.filter(is_active=True).order_by('order')
         
+        # Get site settings
+        settings = SiteSettings.get_settings()
+        settings_data = PublicSiteSettingsSerializer(settings, context=context).data
+        
         # Serialize
         data = {
             'hero': PublicHeroSerializer(hero, context=context).data if hero else None,
@@ -108,10 +114,11 @@ class PublicLandingPageView(LanguageMixin, APIView):
             'partners': PublicPartnerSerializer(partners, many=True, context=context).data,
             'faq': PublicFAQItemSerializer(faq, many=True, context=context).data,
             'testimonials': PublicTestimonialSerializer(testimonials, many=True, context=context).data,
+            'settings': settings_data,
             'meta': {
                 'lang': lang,
                 'supported_languages': SUPPORTED_LANGUAGES,
-                'default_language': DEFAULT_LANGUAGE
+                'default_language': settings.default_language or DEFAULT_LANGUAGE,
             }
         }
         
@@ -414,3 +421,57 @@ class InvalidateCacheView(APIView):
             'status': 'success',
             'message': 'Cache invalidated. New requests will fetch fresh data.'
         })
+
+
+# =============================================================================
+# SITE SETTINGS VIEWS
+# =============================================================================
+
+class PublicSiteSettingsView(LanguageMixin, APIView):
+    """
+    GET /api/public/settings/?lang=fr
+    
+    Returns site settings including SEO meta, feature toggles, etc.
+    Cached for 5 minutes.
+    """
+    permission_classes = [AllowAny]
+    
+    @method_decorator(cache_page(60 * 5))
+    def get(self, request, *args, **kwargs):
+        lang = self.get_language()
+        context = {'lang': lang, 'request': request}
+        
+        settings = SiteSettings.get_settings()
+        serializer = PublicSiteSettingsSerializer(settings, context=context)
+        return Response(serializer.data)
+
+
+class AdminSiteSettingsViewSet(viewsets.ViewSet):
+    """
+    GET /api/admin/cms/settings/
+    PUT /api/admin/cms/settings/
+    PATCH /api/admin/cms/settings/
+    
+    Get or update site settings (singleton - only one instance).
+    """
+    permission_classes = [IsAuthenticated, IsAdminOrSuperAdmin]
+    
+    def list(self, request):
+        """GET /api/admin/cms/settings/ - Get site settings."""
+        settings = SiteSettings.get_settings()
+        serializer = AdminSiteSettingsSerializer(settings)
+        return Response(serializer.data)
+    
+    def retrieve(self, request, pk=None):
+        """GET /api/admin/cms/settings/{pk}/ - Get site settings (redirect to list)."""
+        return self.list(request)
+    
+    @action(detail=False, methods=['put', 'patch'])
+    def update_settings(self, request):
+        """PUT/PATCH /api/admin/cms/settings/update_settings/ - Update site settings."""
+        partial = request.method == 'PATCH'
+        settings = SiteSettings.get_settings()
+        serializer = AdminSiteSettingsSerializer(settings, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)

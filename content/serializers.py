@@ -8,7 +8,7 @@ and admin (CRUD, full translation access) endpoints.
 from rest_framework import serializers
 from .models import (
     HeroSection, FeaturesSection, FeatureItem,
-    Partner, FAQItem, Testimonial,
+    Partner, FAQItem, Testimonial, SiteSettings,
     SUPPORTED_LANGUAGES, DEFAULT_LANGUAGE, FALLBACK_ORDER
 )
 
@@ -79,17 +79,31 @@ class TranslationField(serializers.JSONField):
 class PublicHeroSerializer(serializers.ModelSerializer):
     """Public Hero section - returns translated strings for requested language."""
     title = serializers.SerializerMethodField()
+    title_highlight = serializers.SerializerMethodField()
     subtitle = serializers.SerializerMethodField()
     description = serializers.SerializerMethodField()
+    primary_cta_text = serializers.SerializerMethodField()
+    secondary_cta_text = serializers.SerializerMethodField()
+    badge_text = serializers.SerializerMethodField()
+    card_title = serializers.SerializerMethodField()
+    card_subtitle = serializers.SerializerMethodField()
     background_image = serializers.SerializerMethodField()
     
     class Meta:
         model = HeroSection
-        fields = ['id', 'title', 'subtitle', 'description', 'background_image']
+        fields = [
+            'id', 'title', 'title_highlight', 'subtitle', 'description',
+            'primary_cta_text', 'secondary_cta_text', 'badge_text', 'card_title', 'card_subtitle',
+            'background_image'
+        ]
     
     def get_title(self, obj):
         lang = self.context.get('lang', DEFAULT_LANGUAGE)
         return get_translated_value(obj.title, lang)
+    
+    def get_title_highlight(self, obj):
+        lang = self.context.get('lang', DEFAULT_LANGUAGE)
+        return get_translated_value(obj.title_highlight, lang)
     
     def get_subtitle(self, obj):
         lang = self.context.get('lang', DEFAULT_LANGUAGE)
@@ -98,6 +112,26 @@ class PublicHeroSerializer(serializers.ModelSerializer):
     def get_description(self, obj):
         lang = self.context.get('lang', DEFAULT_LANGUAGE)
         return get_translated_value(obj.description, lang)
+    
+    def get_primary_cta_text(self, obj):
+        lang = self.context.get('lang', DEFAULT_LANGUAGE)
+        return get_translated_value(obj.primary_cta_text, lang)
+    
+    def get_secondary_cta_text(self, obj):
+        lang = self.context.get('lang', DEFAULT_LANGUAGE)
+        return get_translated_value(obj.secondary_cta_text, lang)
+    
+    def get_badge_text(self, obj):
+        lang = self.context.get('lang', DEFAULT_LANGUAGE)
+        return get_translated_value(obj.badge_text, lang)
+    
+    def get_card_title(self, obj):
+        lang = self.context.get('lang', DEFAULT_LANGUAGE)
+        return get_translated_value(obj.card_title, lang)
+    
+    def get_card_subtitle(self, obj):
+        lang = self.context.get('lang', DEFAULT_LANGUAGE)
+        return get_translated_value(obj.card_subtitle, lang)
     
     def get_background_image(self, obj):
         return obj.get_background_url()
@@ -230,14 +264,21 @@ class PublicLandingPageSerializer(serializers.Serializer):
 class AdminHeroSerializer(serializers.ModelSerializer):
     """Admin Hero section - full translation access."""
     title = TranslationField()
+    title_highlight = TranslationField(required=False)
     subtitle = TranslationField()
     description = TranslationField()
+    primary_cta_text = TranslationField(required=False)
+    secondary_cta_text = TranslationField(required=False)
+    badge_text = TranslationField(required=False)
+    card_title = TranslationField(required=False)
+    card_subtitle = TranslationField(required=False)
     background_image_display = serializers.SerializerMethodField(read_only=True)
     
     class Meta:
         model = HeroSection
         fields = [
-            'id', 'title', 'subtitle', 'description',
+            'id', 'title', 'title_highlight', 'subtitle', 'description',
+            'primary_cta_text', 'secondary_cta_text', 'badge_text', 'card_title', 'card_subtitle',
             'background_image', 'background_image_url', 'background_image_display',
             'is_active', 'created_at', 'updated_at'
         ]
@@ -356,3 +397,45 @@ class BulkOrderUpdateSerializer(serializers.Serializer):
                     "Each item must have 'id' and 'order' fields"
                 )
         return value
+
+
+# =============================================================================
+# SITE SETTINGS SERIALIZERS
+# =============================================================================
+
+class PublicSiteSettingsSerializer(serializers.ModelSerializer):
+    """Public Site Settings - English only, no translations."""
+    og_image = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = SiteSettings
+        fields = [
+            'site_name', 'site_tagline', 'default_language', 'google_analytics_id',
+            'meta_title', 'meta_description', 'meta_keywords', 'og_image',
+            'dark_mode_enabled', 'notifications_enabled', 'maintenance_mode', 'registration_enabled',
+            'facebook_url', 'twitter_url', 'instagram_url', 'linkedin_url', 'youtube_url',
+            'contact_email', 'contact_phone', 'contact_address'
+        ]
+    
+    def get_og_image(self, obj):
+        return obj.get_og_image_url()
+
+
+class AdminSiteSettingsSerializer(serializers.ModelSerializer):
+    """Admin Site Settings - English only, no translations."""
+    og_image_display = serializers.SerializerMethodField(read_only=True)
+    
+    class Meta:
+        model = SiteSettings
+        fields = [
+            'id', 'site_name', 'site_tagline', 'default_language', 'google_analytics_id',
+            'meta_title', 'meta_description', 'meta_keywords', 'og_image', 'og_image_url', 'og_image_display',
+            'dark_mode_enabled', 'notifications_enabled', 'maintenance_mode', 'registration_enabled',
+            'facebook_url', 'twitter_url', 'instagram_url', 'linkedin_url', 'youtube_url',
+            'contact_email', 'contact_phone', 'contact_address',
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at', 'og_image_display']
+    
+    def get_og_image_display(self, obj):
+        return obj.get_og_image_url()

@@ -21,13 +21,13 @@ Utility endpoints:
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from rest_framework_simplejwt.views import (
-    TokenObtainPairView,
     TokenRefreshView,
     TokenVerifyView,
 )
 
 from .views import (
     RegisterView,
+    LoginView,
     ProfileView,
     ChangePasswordView,
     LogoutView,
@@ -55,7 +55,7 @@ admin_router.register(r'users', AdminUserViewSet, basename='admin-users')
 # Authentication URL patterns (prefix: /api/auth/)
 auth_urlpatterns = [
     path('register/', RegisterView.as_view(), name='register'),
-    path('login/', TokenObtainPairView.as_view(), name='login'),
+    path('login/', LoginView.as_view(), name='login'),
     path('token/refresh/', TokenRefreshView.as_view(), name='token-refresh'),
     path('token/verify/', TokenVerifyView.as_view(), name='token-verify'),
     path('me/', ProfileView.as_view(), name='profile'),

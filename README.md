@@ -111,72 +111,72 @@ The API will be available at `http://127.0.0.1:8000/`
 
 ### 🔐 Authentication (`/api/auth/`)
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/auth/register/` | Register new user |
-| POST | `/api/auth/login/` | Login (obtain JWT tokens) |
-| POST | `/api/auth/token/refresh/` | Refresh access token |
-| POST | `/api/auth/token/verify/` | Verify token validity |
-| GET | `/api/auth/me/` | Get current user profile |
-| PUT/PATCH | `/api/auth/me/` | Update user profile |
-| POST | `/api/auth/change-password/` | Change password |
-| POST | `/api/auth/logout/` | Logout (blacklist token) |
-| GET | `/api/auth/my-referral-code/` | Get user's referral code |
-| GET | `/api/auth/my-referrals/` | List referred users |
+| Method    | Endpoint                      | Description               |
+| --------- | ----------------------------- | ------------------------- |
+| POST      | `/api/auth/register/`         | Register new user         |
+| POST      | `/api/auth/login/`            | Login (obtain JWT tokens) |
+| POST      | `/api/auth/token/refresh/`    | Refresh access token      |
+| POST      | `/api/auth/token/verify/`     | Verify token validity     |
+| GET       | `/api/auth/me/`               | Get current user profile  |
+| PUT/PATCH | `/api/auth/me/`               | Update user profile       |
+| POST      | `/api/auth/change-password/`  | Change password           |
+| POST      | `/api/auth/logout/`           | Logout (blacklist token)  |
+| GET       | `/api/auth/my-referral-code/` | Get user's referral code  |
+| GET       | `/api/auth/my-referrals/`     | List referred users       |
 
 ### 🌐 Public Landing Page (`/api/public/landing/`)
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/public/landing/` | Full landing page data |
-| GET | `/api/public/landing/?lang=fr` | Landing page (French) |
-| GET | `/api/public/landing/?lang=ar` | Landing page (Arabic) |
-| GET | `/api/public/landing/?lang=en` | Landing page (English) |
-| GET | `/api/public/landing/hero/` | Hero section only |
-| GET | `/api/public/landing/features/` | Features section |
-| GET | `/api/public/landing/partners/` | Partners list |
-| GET | `/api/public/landing/faq/` | FAQ items |
-| GET | `/api/public/landing/testimonials/` | Testimonials |
+| Method | Endpoint                            | Description            |
+| ------ | ----------------------------------- | ---------------------- |
+| GET    | `/api/public/landing/`              | Full landing page data |
+| GET    | `/api/public/landing/?lang=fr`      | Landing page (French)  |
+| GET    | `/api/public/landing/?lang=ar`      | Landing page (Arabic)  |
+| GET    | `/api/public/landing/?lang=en`      | Landing page (English) |
+| GET    | `/api/public/landing/hero/`         | Hero section only      |
+| GET    | `/api/public/landing/features/`     | Features section       |
+| GET    | `/api/public/landing/partners/`     | Partners list          |
+| GET    | `/api/public/landing/faq/`          | FAQ items              |
+| GET    | `/api/public/landing/testimonials/` | Testimonials           |
 
 ### 🔧 Admin CMS (`/api/admin/cms/`)
 
 > ⚠️ Requires admin authentication
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET/POST | `/api/admin/cms/hero/` | List/Create hero sections |
-| GET/PUT/DELETE | `/api/admin/cms/hero/{id}/` | Retrieve/Update/Delete hero |
-| GET/POST | `/api/admin/cms/features/` | List/Create feature sections |
-| GET/PUT/DELETE | `/api/admin/cms/features/{id}/` | Retrieve/Update/Delete features |
-| GET/POST | `/api/admin/cms/feature-items/` | List/Create feature items |
+| Method         | Endpoint                             | Description                         |
+| -------------- | ------------------------------------ | ----------------------------------- |
+| GET/POST       | `/api/admin/cms/hero/`               | List/Create hero sections           |
+| GET/PUT/DELETE | `/api/admin/cms/hero/{id}/`          | Retrieve/Update/Delete hero         |
+| GET/POST       | `/api/admin/cms/features/`           | List/Create feature sections        |
+| GET/PUT/DELETE | `/api/admin/cms/features/{id}/`      | Retrieve/Update/Delete features     |
+| GET/POST       | `/api/admin/cms/feature-items/`      | List/Create feature items           |
 | GET/PUT/DELETE | `/api/admin/cms/feature-items/{id}/` | Retrieve/Update/Delete feature item |
-| GET/POST | `/api/admin/cms/partners/` | List/Create partners |
-| GET/PUT/DELETE | `/api/admin/cms/partners/{id}/` | Retrieve/Update/Delete partner |
-| GET/POST | `/api/admin/cms/faq/` | List/Create FAQ items |
-| GET/PUT/DELETE | `/api/admin/cms/faq/{id}/` | Retrieve/Update/Delete FAQ |
-| GET/POST | `/api/admin/cms/testimonials/` | List/Create testimonials |
-| GET/PUT/DELETE | `/api/admin/cms/testimonials/{id}/` | Retrieve/Update/Delete testimonial |
-| POST | `/api/admin/cms/invalidate-cache/` | Clear landing page cache |
+| GET/POST       | `/api/admin/cms/partners/`           | List/Create partners                |
+| GET/PUT/DELETE | `/api/admin/cms/partners/{id}/`      | Retrieve/Update/Delete partner      |
+| GET/POST       | `/api/admin/cms/faq/`                | List/Create FAQ items               |
+| GET/PUT/DELETE | `/api/admin/cms/faq/{id}/`           | Retrieve/Update/Delete FAQ          |
+| GET/POST       | `/api/admin/cms/testimonials/`       | List/Create testimonials            |
+| GET/PUT/DELETE | `/api/admin/cms/testimonials/{id}/`  | Retrieve/Update/Delete testimonial  |
+| POST           | `/api/admin/cms/invalidate-cache/`   | Clear landing page cache            |
 
 ### 👥 Admin Users (`/api/admin/users/`)
 
 > ⚠️ Requires admin authentication
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/admin/users/` | List all users |
-| POST | `/api/admin/users/` | Create user |
-| GET | `/api/admin/users/{id}/` | Get user details |
-| PUT/PATCH | `/api/admin/users/{id}/` | Update user |
-| DELETE | `/api/admin/users/{id}/` | Delete user |
+| Method    | Endpoint                 | Description      |
+| --------- | ------------------------ | ---------------- |
+| GET       | `/api/admin/users/`      | List all users   |
+| POST      | `/api/admin/users/`      | Create user      |
+| GET       | `/api/admin/users/{id}/` | Get user details |
+| PUT/PATCH | `/api/admin/users/{id}/` | Update user      |
+| DELETE    | `/api/admin/users/{id}/` | Delete user      |
 
 ### 📍 Utilities
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/wilayas/` | List Algerian wilayas |
-| GET | `/api/roles/` | List available user roles |
-| GET | `/api/statuses/` | List user status options |
+| Method | Endpoint         | Description               |
+| ------ | ---------------- | ------------------------- |
+| GET    | `/api/wilayas/`  | List Algerian wilayas     |
+| GET    | `/api/roles/`    | List available user roles |
+| GET    | `/api/statuses/` | List user status options  |
 
 ---
 
@@ -345,6 +345,7 @@ Content models use JSON fields for translations:
 ```
 
 **Supported Languages:**
+
 - `fr` - French (default)
 - `en` - English
 - `ar` - Arabic

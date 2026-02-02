@@ -3,14 +3,103 @@ User Serializers for OOSkills Platform
 
 Provides serializers for:
 - User registration
+- User login
 - User profile (read/update)
 - Admin user management
 - Referral system
 """
 
 from rest_framework import serializers
+from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
+from django.contrib.auth import authenticate
 from django.contrib.auth.password_validation import validate_password
 from .models import User, UserRole, UserStatus, ReferralCode, Referral, ALGERIAN_WILAYAS
+
+
+# =============================================================================
+# AUTHENTICATION SERIALIZERS
+# =============================================================================
+
+class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
+    """
+    Custom JWT serializer that uses email instead of username
+    and properly validates the password.
+    """
+    username_field = 'email'
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Replace 'username' field with 'email'
+        self.fields['email'] = serializers.EmailField(required=True)
+        self.fields['password'] = serializers.CharField(
+            write_only=True,
+            required=True,
+            style={'input_type': 'password'}
+        )
+        # Remove the default username field if it exists
+        if 'username' in self.fields:
+            del self.fields['username']
+    
+    def validate(self, attrs):
+        email = attrs.get('email')
+        password = attrs.get('password')
+        
+        if not email or not password:
+            raise serializers.ValidationError({
+                'detail': 'Email et mot de passe sont obligatoires.'
+            })
+        
+        # Check if user exists
+        try:
+            user = User.objects.get(email=email)
+        except User.DoesNotExist:
+            raise serializers.ValidationError({
+                'detail': 'Email ou mot de passe incorrect.'
+            })
+        
+        # Check if user account is active
+        if user.status == UserStatus.DELETED:
+            raise serializers.ValidationError({
+                'detail': 'Ce compte a été supprimé.'
+            })
+        
+        if user.status == UserStatus.SUSPENDED:
+            raise serializers.ValidationError({
+                'detail': 'Ce compte a été suspendu.'
+            })
+        
+        # Authenticate user (checks password)
+        authenticated_user = authenticate(
+            request=self.context.get('request'),
+            email=email,
+            password=password
+        )
+        
+        if authenticated_user is None:
+            raise serializers.ValidationError({
+                'detail': 'Email ou mot de passe incorrect.'
+            })
+        
+        if not authenticated_user.is_active:
+            raise serializers.ValidationError({
+                'detail': 'Ce compte est désactivé.'
+            })
+        
+        # Generate tokens
+        refresh = self.get_token(authenticated_user)
+        
+        return {
+            'refresh': str(refresh),
+            'access': str(refresh.access_token),
+            'user': {
+                'id': str(authenticated_user.id),
+                'email': authenticated_user.email,
+                'first_name': authenticated_user.first_name,
+                'last_name': authenticated_user.last_name,
+                'role': authenticated_user.role,
+                'status': authenticated_user.status,
+            }
+        }
 
 
 # =============================================================================

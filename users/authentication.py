@@ -173,10 +173,21 @@ class SupabaseAuthBackend:
         ]
     """
     
-    def authenticate(self, request, supabase_id=None, email=None, **kwargs):
+    def authenticate(self, request, email=None, password=None, supabase_id=None, **kwargs):
         """
-        Authenticate user by Supabase ID or email.
+        Authenticate user by email/password or Supabase ID.
         """
+        # Handle email/password authentication
+        if email and password:
+            try:
+                user = User.objects.get(email=email)
+                if user.check_password(password):
+                    return user
+            except User.DoesNotExist:
+                return None
+            return None
+        
+        # Handle Supabase ID authentication
         if supabase_id:
             try:
                 return User.objects.get(supabase_id=supabase_id)

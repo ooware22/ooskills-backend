@@ -11,7 +11,7 @@ import json
 
 from .models import (
     HeroSection, FeaturesSection, FeatureItem,
-    Partner, FAQItem, Testimonial
+    Partner, FAQItem, Testimonial, SiteSettings
 )
 
 
@@ -41,9 +41,17 @@ class HeroSectionAdmin(admin.ModelAdmin):
     readonly_fields = ['created_at', 'updated_at', 'background_preview']
     
     fieldsets = (
-        ('Content', {
-            'fields': ('title', 'subtitle', 'description'),
+        ('Main Content', {
+            'fields': ('title', 'title_highlight', 'subtitle', 'description'),
             'description': 'Enter translations as JSON: {"fr": "...", "ar": "...", "en": "..."}'
+        }),
+        ('Call to Action', {
+            'fields': ('primary_cta_text', 'secondary_cta_text', 'badge_text'),
+            'description': 'Primary and secondary CTA button text, plus badge/label text'
+        }),
+        ('Card Content', {
+            'fields': ('card_title', 'card_subtitle'),
+            'description': 'Card title and subtitle text'
         }),
         ('Background', {
             'fields': ('background_image', 'background_image_url', 'background_preview'),
@@ -247,3 +255,52 @@ class TestimonialAdmin(admin.ModelAdmin):
             return format_html('<img src="{}" style="max-height: 50px; max-width: 50px; border-radius: 50%;" />', url)
         return 'No image'
     author_image_preview.short_description = 'Preview'
+
+
+@admin.register(SiteSettings)
+class SiteSettingsAdmin(admin.ModelAdmin):
+    """Admin for Site Settings (singleton)."""
+    list_display = ['__str__', 'default_language', 'dark_mode_enabled', 'maintenance_mode', 'updated_at']
+    readonly_fields = ['created_at', 'updated_at', 'og_image_preview']
+    
+    fieldsets = (
+        ('General Settings', {
+            'fields': ('site_name', 'site_tagline', 'default_language', 'google_analytics_id'),
+            'description': 'Basic site configuration. Enter translations as JSON: {"fr": "...", "ar": "...", "en": "..."}'
+        }),
+        ('SEO Settings', {
+            'fields': ('meta_title', 'meta_description', 'meta_keywords', 'og_image', 'og_image_url', 'og_image_preview'),
+            'description': 'Search engine optimization settings'
+        }),
+        ('Feature Toggles', {
+            'fields': ('dark_mode_enabled', 'notifications_enabled', 'maintenance_mode', 'registration_enabled'),
+            'description': 'Enable or disable site features'
+        }),
+        ('Social Media', {
+            'fields': ('facebook_url', 'twitter_url', 'instagram_url', 'linkedin_url', 'youtube_url'),
+            'classes': ('collapse',),
+        }),
+        ('Contact Information', {
+            'fields': ('contact_email', 'contact_phone', 'contact_address'),
+            'classes': ('collapse',),
+        }),
+        ('Timestamps', {
+            'fields': ('created_at', 'updated_at'),
+            'classes': ('collapse',),
+        }),
+    )
+    
+    def og_image_preview(self, obj):
+        url = obj.get_og_image_url()
+        if url:
+            return format_html('<img src="{}" style="max-height: 100px; max-width: 200px;" />', url)
+        return 'No image'
+    og_image_preview.short_description = 'OG Image Preview'
+    
+    def has_add_permission(self, request):
+        """Prevent creating more than one instance."""
+        return not SiteSettings.objects.exists()
+    
+    def has_delete_permission(self, request, obj=None):
+        """Prevent deleting the settings."""
+        return False

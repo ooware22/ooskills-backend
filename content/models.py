@@ -129,6 +129,11 @@ class HeroSection(TimeStampedModel, TranslatableFieldMixin):
         validators=[validate_translation_json],
         help_text='{"fr": "...", "ar": "...", "en": "..."}'
     )
+    title_highlight = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text='{"fr": "...", "ar": "...", "en": "..."} - Brand name or highlighted part of title'
+    )
     subtitle = models.JSONField(
         default=dict,
         validators=[validate_translation_json],
@@ -138,6 +143,31 @@ class HeroSection(TimeStampedModel, TranslatableFieldMixin):
         default=dict,
         validators=[validate_translation_json],
         help_text='{"fr": "...", "ar": "...", "en": "..."}'
+    )
+    primary_cta_text = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text='{"fr": "...", "ar": "...", "en": "..."} - Primary call-to-action button text'
+    )
+    secondary_cta_text = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text='{"fr": "...", "ar": "...", "en": "..."} - Secondary call-to-action button text'
+    )
+    badge_text = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text='{"fr": "...", "ar": "...", "en": "..."} - Badge/label text above title'
+    )
+    card_title = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text='{"fr": "...", "ar": "...", "en": "..."} - Card title text'
+    )
+    card_subtitle = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text='{"fr": "...", "ar": "...", "en": "..."} - Card subtitle text'
     )
     background_image = models.ImageField(
         upload_to='hero/',
@@ -404,3 +434,126 @@ class Testimonial(TimeStampedModel, OrderedModel, TranslatableFieldMixin):
     def get_active_testimonials(cls):
         """Get all active testimonials ordered by order field."""
         return cls.objects.filter(is_active=True).order_by('order')
+
+
+# =============================================================================
+# SITE SETTINGS (Singleton Pattern)
+# =============================================================================
+
+class SiteSettings(TimeStampedModel):
+    """
+    Global site settings - singleton model (only one instance allowed).
+    Contains general settings, SEO meta, and feature toggles.
+    English only - no translations needed.
+    """
+    
+    # ----- General Settings -----
+    site_name = models.CharField(
+        max_length=200,
+        blank=True,
+        help_text='Site name'
+    )
+    site_tagline = models.CharField(
+        max_length=500,
+        blank=True,
+        help_text='Site tagline/slogan'
+    )
+    default_language = models.CharField(
+        max_length=5,
+        choices=[('fr', 'Français'), ('ar', 'العربية'), ('en', 'English')],
+        default='fr',
+        help_text='Default language for the site'
+    )
+    google_analytics_id = models.CharField(
+        max_length=50,
+        blank=True,
+        help_text='Google Analytics tracking ID (e.g., G-XXXXXXXXXX)'
+    )
+    
+    # ----- SEO Settings -----
+    meta_title = models.CharField(
+        max_length=200,
+        blank=True,
+        help_text='SEO meta title'
+    )
+    meta_description = models.TextField(
+        blank=True,
+        help_text='SEO meta description'
+    )
+    meta_keywords = models.CharField(
+        max_length=500,
+        blank=True,
+        help_text='SEO meta keywords (comma-separated)'
+    )
+    og_image = models.ImageField(
+        upload_to='seo/',
+        null=True,
+        blank=True,
+        help_text='Open Graph image for social media sharing'
+    )
+    og_image_url = models.URLField(
+        max_length=500,
+        null=True,
+        blank=True,
+        help_text='External URL for OG image'
+    )
+    
+    # ----- Feature Toggles -----
+    dark_mode_enabled = models.BooleanField(
+        default=True,
+        help_text='Allow users to switch between light and dark themes'
+    )
+    notifications_enabled = models.BooleanField(
+        default=True,
+        help_text='Enable notification badges in admin panel'
+    )
+    maintenance_mode = models.BooleanField(
+        default=False,
+        help_text='Enable maintenance mode (shows maintenance page to visitors)'
+    )
+    registration_enabled = models.BooleanField(
+        default=True,
+        help_text='Allow new user registrations'
+    )
+    
+    # ----- Social Media Links -----
+    facebook_url = models.URLField(max_length=500, blank=True)
+    twitter_url = models.URLField(max_length=500, blank=True)
+    instagram_url = models.URLField(max_length=500, blank=True)
+    linkedin_url = models.URLField(max_length=500, blank=True)
+    youtube_url = models.URLField(max_length=500, blank=True)
+    
+    # ----- Contact Info -----
+    contact_email = models.EmailField(blank=True)
+    contact_phone = models.CharField(max_length=50, blank=True)
+    contact_address = models.TextField(
+        blank=True,
+        help_text='Physical address'
+    )
+    
+    class Meta:
+        verbose_name = "Site Settings"
+        verbose_name_plural = "Site Settings"
+    
+    def __str__(self):
+        return "Site Settings"
+    
+    def save(self, *args, **kwargs):
+        """Ensure only one instance exists (singleton pattern)."""
+        if not self.pk and SiteSettings.objects.exists():
+            # Update existing instance instead of creating new
+            existing = SiteSettings.objects.first()
+            self.pk = existing.pk
+        super().save(*args, **kwargs)
+    
+    def get_og_image_url(self):
+        """Returns the OG image URL."""
+        if self.og_image:
+            return self.og_image.url
+        return self.og_image_url
+    
+    @classmethod
+    def get_settings(cls):
+        """Get or create the singleton settings instance."""
+        settings, created = cls.objects.get_or_create(pk=1)
+        return settings

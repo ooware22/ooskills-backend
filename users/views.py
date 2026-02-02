@@ -31,6 +31,7 @@ from .serializers import (
     ReferralSerializer,
     UserCompactSerializer,
     WilayaSerializer,
+    CustomTokenObtainPairSerializer,
 )
 from content.permissions import IsAdminOrSuperAdmin
 
@@ -65,6 +66,17 @@ class RegisterView(generics.CreateAPIView):
             },
             'message': 'Inscription réussie. Veuillez vérifier votre email.'
         }, status=status.HTTP_201_CREATED)
+
+
+class LoginView(TokenObtainPairView):
+    """
+    POST /api/auth/login/
+    
+    Login with email and password.
+    Returns JWT tokens and user info.
+    """
+    permission_classes = [AllowAny]
+    serializer_class = CustomTokenObtainPairSerializer
 
 
 class ProfileView(generics.RetrieveUpdateAPIView):

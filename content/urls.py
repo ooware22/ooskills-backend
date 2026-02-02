@@ -8,6 +8,7 @@ Public endpoints (read-only):
     /api/public/landing/partners/    - Partners list
     /api/public/landing/faq/         - FAQ items list
     /api/public/landing/testimonials/ - Testimonials list
+    /api/public/settings/            - Site settings (SEO meta, toggles, etc.)
 
 Admin endpoints (CRUD):
     /api/admin/cms/hero/             - Hero CRUD
@@ -16,6 +17,7 @@ Admin endpoints (CRUD):
     /api/admin/cms/partners/         - Partners CRUD
     /api/admin/cms/faq/              - FAQ CRUD
     /api/admin/cms/testimonials/     - Testimonials CRUD
+    /api/admin/cms/settings/         - Site settings CRUD
     /api/admin/cms/invalidate-cache/ - Cache invalidation
 """
 
@@ -30,6 +32,7 @@ from .views import (
     PublicPartnersView,
     PublicFAQView,
     PublicTestimonialsView,
+    PublicSiteSettingsView,
     # Admin viewsets
     AdminHeroViewSet,
     AdminFeaturesSectionViewSet,
@@ -37,6 +40,7 @@ from .views import (
     AdminPartnerViewSet,
     AdminFAQViewSet,
     AdminTestimonialViewSet,
+    AdminSiteSettingsViewSet,
     InvalidateCacheView,
 )
 
@@ -52,6 +56,7 @@ admin_router.register(r'feature-items', AdminFeatureItemViewSet, basename='admin
 admin_router.register(r'partners', AdminPartnerViewSet, basename='admin-partners')
 admin_router.register(r'faq', AdminFAQViewSet, basename='admin-faq')
 admin_router.register(r'testimonials', AdminTestimonialViewSet, basename='admin-testimonials')
+admin_router.register(r'settings', AdminSiteSettingsViewSet, basename='admin-settings')
 
 
 # =============================================================================
@@ -68,16 +73,24 @@ public_urlpatterns = [
     path('testimonials/', PublicTestimonialsView.as_view(), name='public-testimonials'),
 ]
 
+# Site settings public URL (separate from landing to allow independent caching)
+settings_urlpatterns = [
+    path('', PublicSiteSettingsView.as_view(), name='public-settings'),
+]
+
 # Admin URL patterns (prefix: /api/admin/cms/)
 admin_urlpatterns = [
     path('', include(admin_router.urls)),
     path('invalidate-cache/', InvalidateCacheView.as_view(), name='invalidate-cache'),
 ]
 
+
+
 # Combined app URLs
 app_name = 'content'
 
 urlpatterns = [
     path('public/landing/', include((public_urlpatterns, 'public'))),
+    path('public/settings/', include((settings_urlpatterns, 'settings'))),
     path('admin/cms/', include((admin_urlpatterns, 'admin'))),
 ]
