@@ -50,7 +50,13 @@ class TranslationField(serializers.JSONField):
     """
     Custom field for translation JSON.
     Validates structure and ensures proper encoding.
+    Supports partial updates - only languages provided will be updated,
+    other languages will keep their existing values.
     """
+    def __init__(self, *args, **kwargs):
+        self.allow_partial = kwargs.pop('allow_partial', True)
+        super().__init__(*args, **kwargs)
+    
     def to_internal_value(self, data):
         if isinstance(data, str):
             import json
@@ -70,6 +76,23 @@ class TranslationField(serializers.JSONField):
             )
         
         return super().to_internal_value(data)
+
+
+def merge_translations(existing: dict, updates: dict) -> dict:
+    """
+    Merge translation updates with existing translations.
+    Only provided languages are updated, others remain unchanged.
+    """
+    if existing is None:
+        existing = {}
+    if updates is None:
+        return existing
+    
+    result = dict(existing)
+    for lang in SUPPORTED_LANGUAGES:
+        if lang in updates:
+            result[lang] = updates[lang]
+    return result
 
 
 # =============================================================================
@@ -286,6 +309,19 @@ class AdminHeroSerializer(serializers.ModelSerializer):
     
     def get_background_image_display(self, obj):
         return obj.get_background_url()
+    
+    def update(self, instance, validated_data):
+        """Merge translation fields instead of replacing them entirely."""
+        translation_fields = [
+            'title', 'title_highlight', 'subtitle', 'description',
+            'primary_cta_text', 'secondary_cta_text', 'badge_text',
+            'card_title', 'card_subtitle'
+        ]
+        for field in translation_fields:
+            if field in validated_data:
+                existing = getattr(instance, field, {}) or {}
+                validated_data[field] = merge_translations(existing, validated_data[field])
+        return super().update(instance, validated_data)
 
 
 class AdminFeatureItemSerializer(serializers.ModelSerializer):
@@ -305,6 +341,15 @@ class AdminFeatureItemSerializer(serializers.ModelSerializer):
     
     def get_icon_display(self, obj):
         return obj.get_icon_value()
+    
+    def update(self, instance, validated_data):
+        """Merge translation fields instead of replacing them entirely."""
+        translation_fields = ['title', 'description']
+        for field in translation_fields:
+            if field in validated_data:
+                existing = getattr(instance, field, {}) or {}
+                validated_data[field] = merge_translations(existing, validated_data[field])
+        return super().update(instance, validated_data)
 
 
 class AdminFeaturesSectionSerializer(serializers.ModelSerializer):
@@ -324,6 +369,15 @@ class AdminFeaturesSectionSerializer(serializers.ModelSerializer):
     
     def get_items_count(self, obj):
         return obj.items.count()
+    
+    def update(self, instance, validated_data):
+        """Merge translation fields instead of replacing them entirely."""
+        translation_fields = ['title', 'subtitle']
+        for field in translation_fields:
+            if field in validated_data:
+                existing = getattr(instance, field, {}) or {}
+                validated_data[field] = merge_translations(existing, validated_data[field])
+        return super().update(instance, validated_data)
 
 
 class AdminPartnerSerializer(serializers.ModelSerializer):
@@ -355,6 +409,15 @@ class AdminFAQItemSerializer(serializers.ModelSerializer):
             'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
+    
+    def update(self, instance, validated_data):
+        """Merge translation fields instead of replacing them entirely."""
+        translation_fields = ['question', 'answer']
+        for field in translation_fields:
+            if field in validated_data:
+                existing = getattr(instance, field, {}) or {}
+                validated_data[field] = merge_translations(existing, validated_data[field])
+        return super().update(instance, validated_data)
 
 
 class AdminTestimonialSerializer(serializers.ModelSerializer):
@@ -375,6 +438,15 @@ class AdminTestimonialSerializer(serializers.ModelSerializer):
     
     def get_author_image_display(self, obj):
         return obj.get_author_image_url()
+    
+    def update(self, instance, validated_data):
+        """Merge translation fields instead of replacing them entirely."""
+        translation_fields = ['author_title', 'content']
+        for field in translation_fields:
+            if field in validated_data:
+                existing = getattr(instance, field, {}) or {}
+                validated_data[field] = merge_translations(existing, validated_data[field])
+        return super().update(instance, validated_data)
 
 
 # =============================================================================
