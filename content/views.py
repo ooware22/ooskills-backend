@@ -30,19 +30,19 @@ from rest_framework.permissions import IsAuthenticated, AllowAny
 
 from .models import (
     HeroSection, FeaturesSection, FeatureItem,
-    Partner, FAQItem, Testimonial, SiteSettings,
+    Partner, FAQSection, FAQItem, Testimonial, SiteSettings,
     SUPPORTED_LANGUAGES, DEFAULT_LANGUAGE
 )
 from .serializers import (
     # Public serializers
     PublicHeroSerializer, PublicFeaturesSectionSerializer,
-    PublicPartnerSerializer, PublicFAQItemSerializer,
+    PublicPartnerSerializer, PublicFAQItemSerializer, PublicFAQSectionSerializer,
     PublicTestimonialSerializer, PublicLandingPageSerializer,
     PublicSiteSettingsSerializer,
     # Admin serializers
     AdminHeroSerializer, AdminFeaturesSectionSerializer,
     AdminFeatureItemSerializer, AdminPartnerSerializer,
-    AdminFAQItemSerializer, AdminTestimonialSerializer,
+    AdminFAQSectionSerializer, AdminFAQItemSerializer, AdminTestimonialSerializer,
     AdminSiteSettingsSerializer,
     BulkOrderUpdateSerializer
 )
@@ -100,7 +100,15 @@ class PublicLandingPageView(LanguageMixin, APIView):
         ).first()
         
         partners = Partner.objects.filter(is_active=True).order_by('order')
-        faq = FAQItem.objects.filter(is_active=True).order_by('order')
+        
+        # Fetch FAQ section with items
+        faq_section = FAQSection.objects.filter(is_active=True).prefetch_related(
+            Prefetch(
+                'items',
+                queryset=FAQItem.objects.filter(is_active=True).order_by('order')
+            )
+        ).first()
+        
         testimonials = Testimonial.objects.filter(is_active=True).order_by('order')
         
         # Get site settings
@@ -112,7 +120,7 @@ class PublicLandingPageView(LanguageMixin, APIView):
             'hero': PublicHeroSerializer(hero, context=context).data if hero else None,
             'features': PublicFeaturesSectionSerializer(features, context=context).data if features else None,
             'partners': PublicPartnerSerializer(partners, many=True, context=context).data,
-            'faq': PublicFAQItemSerializer(faq, many=True, context=context).data,
+            'faq': PublicFAQSectionSerializer(faq_section, context=context).data if faq_section else None,
             'testimonials': PublicTestimonialSerializer(testimonials, many=True, context=context).data,
             'settings': settings_data,
             'meta': {
@@ -197,21 +205,31 @@ class PublicPartnersView(LanguageMixin, generics.ListAPIView):
         return Partner.objects.filter(is_active=True).order_by('order')
 
 
-class PublicFAQView(LanguageMixin, generics.ListAPIView):
+class PublicFAQView(LanguageMixin, generics.RetrieveAPIView):
     """
     GET /api/public/landing/faq/?lang=fr
     
-    Returns all active FAQ items.
+    Returns the active FAQ section with title, subtitle, and nested items.
     """
     permission_classes = [AllowAny]
-    serializer_class = PublicFAQItemSerializer
+    serializer_class = PublicFAQSectionSerializer
     
     @method_decorator(cache_page(60 * 5))
     def get(self, request, *args, **kwargs):
-        return super().get(request, *args, **kwargs)
-    
-    def get_queryset(self):
-        return FAQItem.objects.filter(is_active=True).order_by('order')
+        faq_section = FAQSection.objects.filter(is_active=True).prefetch_related(
+            Prefetch(
+                'items',
+                queryset=FAQItem.objects.filter(is_active=True).order_by('order')
+            )
+        ).first()
+        
+        if not faq_section:
+            return Response(
+                {'detail': 'No active FAQ section found.'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        serializer = self.get_serializer(faq_section)
+        return Response(serializer.data)
 
 
 class PublicTestimonialsView(LanguageMixin, generics.ListAPIView):
@@ -355,9 +373,51 @@ class AdminPartnerViewSet(viewsets.ModelViewSet):
         return Response({'status': 'reordered', 'count': len(items_data)})
 
 
-class AdminFAQViewSet(viewsets.ModelViewSet):
+class AdminFAQSectionViewSet(viewsets.ModelViewSet):
+    """
+    Admin CRUD for FAQ sections (title/subtitle).
+    
+    GET /api/admin/cms/faq/ - List all sections
+    POST /api/admin/cms/faq/ - Create new section
+    GET /api/admin/cms/faq/{id}/ - Retrieve
+    PUT /api/admin/cms/faq/{id}/ - Update
+    DELETE /api/admin/cms/faq/{id}/ - Delete
+    """
+    queryset = FAQSection.objects.all().order_by('-created_at')
+    serializer_class = AdminFAQSectionSerializer
+    permission_classes = [IsAuthenticated, IsAdminOrSuperAdmin]
+    
+    def get_queryset(self):
+        return FAQSection.objects.prefetch_related('items').order_by('-created_at')
+    
+    @action(detail=True, methods=['post'])
+    def activate(self, request, pk=None):
+        """Set this FAQ section as active and deactivate others."""
+        faq_section = self.get_object()
+        FAQSection.objects.exclude(pk=faq_section.pk).update(is_active=False)
+        faq_section.is_active = True
+        faq_section.save()
+        return Response({'status': 'activated', 'id': faq_section.id})
+    
+    @action(detail=False, methods=['get'])
+    def active(self, request):
+        """Get the currently active FAQ section."""
+        faq_section = FAQSection.objects.filter(is_active=True).prefetch_related('items').first()
+        if faq_section:
+            serializer = self.get_serializer(faq_section)
+            return Response(serializer.data)
+        return Response({'detail': 'No active FAQ section'}, status=status.HTTP_404_NOT_FOUND)
+
+
+class AdminFAQItemViewSet(viewsets.ModelViewSet):
     """
     Admin CRUD for FAQ items.
+    
+    GET /api/admin/cms/faq-items/ - List all items
+    POST /api/admin/cms/faq-items/ - Create new item
+    GET /api/admin/cms/faq-items/{id}/ - Retrieve
+    PUT /api/admin/cms/faq-items/{id}/ - Update
+    DELETE /api/admin/cms/faq-items/{id}/ - Delete
     """
     queryset = FAQItem.objects.all().order_by('order')
     serializer_class = AdminFAQItemSerializer

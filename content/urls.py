@@ -38,7 +38,8 @@ from .views import (
     AdminFeaturesSectionViewSet,
     AdminFeatureItemViewSet,
     AdminPartnerViewSet,
-    AdminFAQViewSet,
+    AdminFAQSectionViewSet,
+    AdminFAQItemViewSet,
     AdminTestimonialViewSet,
     AdminSiteSettingsViewSet,
     InvalidateCacheView,
@@ -54,7 +55,8 @@ admin_router.register(r'hero', AdminHeroViewSet, basename='admin-hero')
 admin_router.register(r'features', AdminFeaturesSectionViewSet, basename='admin-features')
 admin_router.register(r'feature-items', AdminFeatureItemViewSet, basename='admin-feature-items')
 admin_router.register(r'partners', AdminPartnerViewSet, basename='admin-partners')
-admin_router.register(r'faq', AdminFAQViewSet, basename='admin-faq')
+admin_router.register(r'faq', AdminFAQSectionViewSet, basename='admin-faq')
+admin_router.register(r'faq-items', AdminFAQItemViewSet, basename='admin-faq-items')
 admin_router.register(r'testimonials', AdminTestimonialViewSet, basename='admin-testimonials')
 admin_router.register(r'settings', AdminSiteSettingsViewSet, basename='admin-settings')
 

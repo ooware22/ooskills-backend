@@ -8,7 +8,7 @@ and admin (CRUD, full translation access) endpoints.
 from rest_framework import serializers
 from .models import (
     HeroSection, FeaturesSection, FeatureItem,
-    Partner, FAQItem, Testimonial, SiteSettings,
+    Partner, FAQSection, FAQItem, Testimonial, SiteSettings,
     SUPPORTED_LANGUAGES, DEFAULT_LANGUAGE, FALLBACK_ORDER
 )
 
@@ -238,6 +238,32 @@ class PublicFAQItemSerializer(serializers.ModelSerializer):
         return get_translated_value(obj.answer, lang)
 
 
+class PublicFAQSectionSerializer(serializers.ModelSerializer):
+    """Public FAQ section with items."""
+    title = serializers.SerializerMethodField()
+    subtitle = serializers.SerializerMethodField()
+    items = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = FAQSection
+        fields = ['id', 'title', 'subtitle', 'items']
+    
+    def get_title(self, obj):
+        lang = self.context.get('lang', DEFAULT_LANGUAGE)
+        return get_translated_value(obj.title, lang)
+    
+    def get_subtitle(self, obj):
+        lang = self.context.get('lang', DEFAULT_LANGUAGE)
+        return get_translated_value(obj.subtitle, lang)
+    
+    def get_items(self, obj):
+        # Use prefetched items if available, otherwise filter
+        items = getattr(obj, '_prefetched_objects_cache', {}).get('items')
+        if items is None:
+            items = obj.items.filter(is_active=True).order_by('order')
+        return PublicFAQItemSerializer(items, many=True, context=self.context).data
+
+
 class PublicTestimonialSerializer(serializers.ModelSerializer):
     """Public Testimonial - returns translated strings."""
     author_title = serializers.SerializerMethodField()
@@ -405,7 +431,7 @@ class AdminFAQItemSerializer(serializers.ModelSerializer):
     class Meta:
         model = FAQItem
         fields = [
-            'id', 'question', 'answer', 'order', 'is_active',
+            'id', 'section', 'question', 'answer', 'order', 'is_active',
             'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
@@ -413,6 +439,34 @@ class AdminFAQItemSerializer(serializers.ModelSerializer):
     def update(self, instance, validated_data):
         """Merge translation fields instead of replacing them entirely."""
         translation_fields = ['question', 'answer']
+        for field in translation_fields:
+            if field in validated_data:
+                existing = getattr(instance, field, {}) or {}
+                validated_data[field] = merge_translations(existing, validated_data[field])
+        return super().update(instance, validated_data)
+
+
+class AdminFAQSectionSerializer(serializers.ModelSerializer):
+    """Admin FAQ section - full translation access."""
+    title = TranslationField()
+    subtitle = TranslationField()
+    items = AdminFAQItemSerializer(many=True, read_only=True)
+    items_count = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = FAQSection
+        fields = [
+            'id', 'title', 'subtitle', 'is_active',
+            'items', 'items_count', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'items', 'items_count', 'created_at', 'updated_at']
+    
+    def get_items_count(self, obj):
+        return obj.items.count()
+    
+    def update(self, instance, validated_data):
+        """Merge translation fields instead of replacing them entirely."""
+        translation_fields = ['title', 'subtitle']
         for field in translation_fields:
             if field in validated_data:
                 existing = getattr(instance, field, {}) or {}

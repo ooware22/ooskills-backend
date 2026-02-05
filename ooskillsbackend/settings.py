@@ -159,8 +159,8 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
-        'users.authentication.SupabaseJWTAuthentication',  # Supabase Auth
-        'rest_framework_simplejwt.authentication.JWTAuthentication',  # Local JWT
+        'rest_framework_simplejwt.authentication.JWTAuthentication',  # Local JWT (primary)
+        'users.authentication.SupabaseJWTAuthentication',  # Supabase Auth (fallback)
         'rest_framework.authentication.SessionAuthentication',  # For browsable API
     ],
     'DEFAULT_PERMISSION_CLASSES': [

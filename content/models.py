@@ -353,10 +353,53 @@ class Partner(TimeStampedModel, OrderedModel):
 # FAQ SECTION
 # =============================================================================
 
+class FAQSection(TimeStampedModel, TranslatableFieldMixin):
+    """
+    FAQ section header/container.
+    Contains the section title/subtitle and related FAQItem entries.
+    """
+    title = models.JSONField(
+        default=dict,
+        validators=[validate_translation_json],
+        help_text='{"fr": "...", "ar": "...", "en": "..."}'
+    )
+    subtitle = models.JSONField(
+        default=dict,
+        validators=[validate_translation_json],
+        help_text='{"fr": "...", "ar": "...", "en": "..."}'
+    )
+    is_active = models.BooleanField(default=True, db_index=True)
+    
+    class Meta:
+        verbose_name = "FAQ Section"
+        verbose_name_plural = "FAQ Sections"
+        ordering = ['-created_at']
+    
+    def __str__(self):
+        return f"FAQ: {self.get_translated_value(self.title, 'en')[:50]}"
+    
+    @classmethod
+    def get_active(cls):
+        """Get the currently active FAQ section with prefetched items."""
+        return cls.objects.filter(is_active=True).prefetch_related(
+            models.Prefetch(
+                'items',
+                queryset=FAQItem.objects.filter(is_active=True).order_by('order')
+            )
+        ).first()
+
+
 class FAQItem(TimeStampedModel, OrderedModel, TranslatableFieldMixin):
     """
     FAQ entry with translatable question and answer.
     """
+    section = models.ForeignKey(
+        FAQSection,
+        on_delete=models.CASCADE,
+        related_name='items',
+        null=True,
+        blank=True
+    )
     question = models.JSONField(
         default=dict,
         validators=[validate_translation_json],
