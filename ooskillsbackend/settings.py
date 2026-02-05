@@ -251,6 +251,8 @@ SUPABASE_JWT_SECRET = os.environ.get('SUPABASE_JWT_SECRET', '')
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",  # Next.js dev server
     "http://127.0.0.1:3000",
+    "https://ooskills-frontend.vercel.app/"
+
 ]
 
 CORS_ALLOW_CREDENTIALS = True
