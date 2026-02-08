@@ -251,7 +251,7 @@ SUPABASE_JWT_SECRET = os.environ.get('SUPABASE_JWT_SECRET', '')
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",  # Next.js dev server
     "http://127.0.0.1:3000",
-    "https://ooskills-frontend.vercel.app/"
+    "https://ooskills-frontend.vercel.app"
 
 ]
 
@@ -295,3 +295,31 @@ LANGUAGES = [
 # CMS supported languages (used by content app)
 CMS_LANGUAGES = ['fr', 'ar', 'en']
 CMS_DEFAULT_LANGUAGE = 'fr'
+
+
+# =============================================================================
+# EMAIL CONFIGURATION
+# =============================================================================
+
+
+EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+EMAIL_HOST = 'smtp.gmail.com'
+EMAIL_PORT =587
+EMAIL_USE_TLS = True
+EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER', '')
+EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', '')
+DEFAULT_FROM_EMAIL = os.environ.get('EMAIL_HOST_USER', '')
+
+# For development, use console backend to see emails in terminal
+if DEBUG and not EMAIL_HOST_USER:
+    EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+
+
+# =============================================================================
+# FRONTEND CONFIGURATION
+# =============================================================================
+
+FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://localhost:3000')
+
+# Token expiration time in hours
+EMAIL_VERIFICATION_TOKEN_EXPIRY_HOURS = 24

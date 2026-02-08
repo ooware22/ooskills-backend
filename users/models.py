@@ -380,10 +380,12 @@ class User(AbstractBaseUser, PermissionsMixin):
     
     @property
     def avatar_display_url(self):
-        """Return avatar URL (uploaded file or external URL)."""
+        """Return avatar URL (Supabase URL preferred, local file as fallback)."""
+        if self.avatar_url:
+            return self.avatar_url
         if self.avatar:
             return self.avatar.url
-        return self.avatar_url
+        return None
     
     @property
     def is_admin(self):
@@ -539,3 +541,64 @@ class Referral(models.Model):
     
     def __str__(self):
         return f"{self.referrer.email} → {self.referred.email}"
+
+
+# =============================================================================
+# EMAIL VERIFICATION TOKEN MODEL
+# =============================================================================
+
+class EmailVerificationToken(models.Model):
+    """
+    Token for email verification.
+    """
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False
+    )
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='verification_tokens'
+    )
+    token = models.CharField(
+        max_length=64,
+        unique=True,
+        db_index=True
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    is_used = models.BooleanField(default=False)
+    
+    class Meta:
+        verbose_name = 'Token de vérification'
+        verbose_name_plural = 'Tokens de vérification'
+        ordering = ['-created_at']
+    
+    def __str__(self):
+        return f"Token for {self.user.email}"
+    
+    @property
+    def is_expired(self):
+        """Check if token has expired."""
+        return timezone.now() > self.expires_at
+    
+    @property
+    def is_valid(self):
+        """Check if token is still valid (not used and not expired)."""
+        return not self.is_used and not self.is_expired
+    
+    def use_token(self):
+        """Mark token as used and activate user."""
+        if not self.is_valid:
+            return False
+        
+        self.is_used = True
+        self.save(update_fields=['is_used'])
+        
+        # Activate user
+        self.user.email_verified = True
+        self.user.status = UserStatus.ACTIVE
+        self.user.save(update_fields=['email_verified', 'status', 'updated_at'])
+        
+        return True

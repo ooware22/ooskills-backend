@@ -14,6 +14,8 @@ from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from django.contrib.auth import authenticate
 from django.contrib.auth.password_validation import validate_password
 from .models import User, UserRole, UserStatus, ReferralCode, Referral, ALGERIAN_WILAYAS
+from .storage import upload_avatar, delete_avatar, create_supabase_auth_user
+from .email import send_verification_email
 
 
 # =============================================================================
@@ -125,13 +127,14 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
         required=False,
         allow_blank=True
     )
+    avatar = serializers.ImageField(required=False, allow_null=True, write_only=True)
     
     class Meta:
         model = User
         fields = [
             'email', 'password', 'password_confirm',
             'first_name', 'last_name', 'phone', 'wilaya',
-            'referral_code', 'newsletter_subscribed'
+            'referral_code', 'newsletter_subscribed', 'avatar'
         ]
     
     def validate(self, attrs):
@@ -149,12 +152,50 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError("Code de parrainage invalide.")
         return value
     
+    def validate_avatar(self, value):
+        """Validate avatar file size and type."""
+        if value:
+            max_size = 5 * 1024 * 1024
+            if value.size > max_size:
+                raise serializers.ValidationError(
+                    "La taille du fichier ne doit pas dépasser 5 Mo."
+                )
+            allowed_extensions = ['jpg', 'jpeg', 'png', 'webp', 'gif']
+            file_extension = value.name.split('.')[-1].lower()
+            if file_extension not in allowed_extensions:
+                raise serializers.ValidationError(
+                    f"Format non supporté. Formats acceptés: {', '.join(allowed_extensions)}"
+                )
+        return value
+    
     def create(self, validated_data):
         referral_code_str = validated_data.pop('referral_code', None)
+        avatar_file = validated_data.pop('avatar', None)
+        email = validated_data.get('email')
+        password = validated_data.get('password')
         
+        # Create user in Supabase Auth first
+        try:
+            user_metadata = {
+                'first_name': validated_data.get('first_name', ''),
+                'last_name': validated_data.get('last_name', ''),
+            }
+            supabase_user = create_supabase_auth_user(
+                email=email,
+                password=password,
+                user_metadata=user_metadata
+            )
+            supabase_id = supabase_user['id']
+        except Exception as e:
+            raise serializers.ValidationError({
+                'email': f"Erreur lors de la création du compte: {str(e)}"
+            })
+        
+        # Create Django user
         user = User.objects.create_user(
-            email=validated_data['email'],
-            password=validated_data['password'],
+            email=email,
+            password=password,
+            supabase_id=supabase_id,
             first_name=validated_data.get('first_name', ''),
             last_name=validated_data.get('last_name', ''),
             phone=validated_data.get('phone', ''),
@@ -175,6 +216,42 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
                 ref_code.save(update_fields=['uses_count'])
             except ReferralCode.DoesNotExist:
                 pass
+        
+        # Upload avatar to Supabase in background (non-blocking)
+        if avatar_file:
+            try:
+                avatar_file.seek(0)
+                # Read file content into memory before the request ends
+                file_content = avatar_file.read()
+                file_name = avatar_file.name
+                user_id = str(user.id)
+                
+                import threading
+                def _upload_avatar():
+                    try:
+                        from .storage import get_supabase_client
+                        supabase = get_supabase_client()
+                        file_ext = file_name.split('.')[-1].lower()
+                        path = f"avatars/{user_id}.{file_ext}"
+                        content_types = {
+                            'jpg': 'image/jpeg', 'jpeg': 'image/jpeg',
+                            'png': 'image/png', 'webp': 'image/webp', 'gif': 'image/gif',
+                        }
+                        supabase.storage.from_('avatars').upload(
+                            path=path, file=file_content,
+                            file_options={'content-type': content_types.get(file_ext, 'image/jpeg'), 'upsert': 'true'}
+                        )
+                        public_url = supabase.storage.from_('avatars').get_public_url(path)
+                        from .models import User as UserModel
+                        UserModel.objects.filter(id=user_id).update(avatar_url=public_url)
+                    except Exception as e:
+                        import logging
+                        logging.getLogger(__name__).error(f"Avatar upload failed for user {user_id}: {e}")
+                
+                threading.Thread(target=_upload_avatar, daemon=True).start()
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).error(f"Avatar read failed for user {user.id}: {e}")
         
         return user
 
@@ -212,7 +289,9 @@ class UserProfileSerializer(serializers.ModelSerializer):
 
 
 class UserProfileUpdateSerializer(serializers.ModelSerializer):
-    """Serializer for updating user profile."""
+    """Serializer for updating user profile with Supabase avatar upload."""
+    
+    avatar = serializers.ImageField(required=False, allow_null=True, write_only=True)
     
     class Meta:
         model = User
@@ -227,6 +306,45 @@ class UserProfileUpdateSerializer(serializers.ModelSerializer):
                 "Le numéro doit commencer par +213 ou 0"
             )
         return value
+    
+    def validate_avatar(self, value):
+        """Validate avatar file size and type."""
+        if value:
+            # Check file size (max 5MB)
+            max_size = 5 * 1024 * 1024
+            if value.size > max_size:
+                raise serializers.ValidationError(
+                    "La taille du fichier ne doit pas dépasser 5 Mo."
+                )
+            # Check file extension
+            allowed_extensions = ['jpg', 'jpeg', 'png', 'webp', 'gif']
+            file_extension = value.name.split('.')[-1].lower()
+            if file_extension not in allowed_extensions:
+                raise serializers.ValidationError(
+                    f"Format non supporté. Formats acceptés: {', '.join(allowed_extensions)}"
+                )
+        return value
+    
+    def update(self, instance, validated_data):
+        """Handle avatar upload to Supabase Storage."""
+        avatar_file = validated_data.pop('avatar', None)
+        
+        # Upload avatar to Supabase if provided
+        if avatar_file:
+            # Delete old avatar if exists
+            if instance.avatar_url:
+                delete_avatar(instance.avatar_url)
+            
+            # Upload new avatar
+            public_url = upload_avatar(avatar_file, str(instance.id))
+            instance.avatar_url = public_url
+        
+        # Update other fields
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        
+        instance.save()
+        return instance
 
 
 class ChangePasswordSerializer(serializers.Serializer):
@@ -280,7 +398,7 @@ class AdminUserSerializer(serializers.ModelSerializer):
 
 
 class AdminUserCreateSerializer(serializers.ModelSerializer):
-    """Serializer for admin to create users."""
+    """Serializer for admin to create users with Supabase avatar upload."""
     
     password = serializers.CharField(
         write_only=True,
@@ -288,36 +406,158 @@ class AdminUserCreateSerializer(serializers.ModelSerializer):
         validators=[validate_password],
         style={'input_type': 'password'}
     )
+    avatar = serializers.ImageField(required=False, allow_null=True, write_only=True)
     
     class Meta:
         model = User
         fields = [
             'email', 'password', 'first_name', 'last_name',
             'phone', 'wilaya', 'role', 'status',
-            'is_staff', 'email_verified'
+            'is_staff', 'email_verified', 'avatar',
+            'language', 'newsletter_subscribed'
         ]
+    
+    def validate_avatar(self, value):
+        """Validate avatar file size and type."""
+        if value:
+            max_size = 5 * 1024 * 1024
+            if value.size > max_size:
+                raise serializers.ValidationError(
+                    "La taille du fichier ne doit pas dépasser 5 Mo."
+                )
+            allowed_extensions = ['jpg', 'jpeg', 'png', 'webp', 'gif']
+            file_extension = value.name.split('.')[-1].lower()
+            if file_extension not in allowed_extensions:
+                raise serializers.ValidationError(
+                    f"Format non supporté. Formats acceptés: {', '.join(allowed_extensions)}"
+                )
+        return value
     
     def create(self, validated_data):
         password = validated_data.pop('password', None)
+        avatar_file = validated_data.pop('avatar', None)
+        email = validated_data.get('email')
+        
+        # Create user in Supabase Auth first
+        try:
+            user_metadata = {
+                'first_name': validated_data.get('first_name', ''),
+                'last_name': validated_data.get('last_name', ''),
+            }
+            supabase_user = create_supabase_auth_user(
+                email=email,
+                password=password,
+                user_metadata=user_metadata
+            )
+            validated_data['supabase_id'] = supabase_user['id']
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Supabase user creation failed for {email}: {str(e)}")
+            raise serializers.ValidationError({
+                'email': f"Erreur lors de la création du compte: {str(e)}"
+            })
+        
+        # Create Django user
         user = User(**validated_data)
         if password:
             user.set_password(password)
         else:
             user.set_unusable_password()
         user.save()
+        
+        # Upload avatar to Supabase in background (non-blocking)
+        if avatar_file:
+            try:
+                avatar_file.seek(0)
+                file_content = avatar_file.read()
+                file_name = avatar_file.name
+                user_id = str(user.id)
+                
+                import threading
+                def _upload_avatar():
+                    try:
+                        from .storage import get_supabase_client
+                        supabase = get_supabase_client()
+                        file_ext = file_name.split('.')[-1].lower()
+                        path = f"avatars/{user_id}.{file_ext}"
+                        content_types = {
+                            'jpg': 'image/jpeg', 'jpeg': 'image/jpeg',
+                            'png': 'image/png', 'webp': 'image/webp', 'gif': 'image/gif',
+                        }
+                        supabase.storage.from_('avatars').upload(
+                            path=path, file=file_content,
+                            file_options={'content-type': content_types.get(file_ext, 'image/jpeg'), 'upsert': 'true'}
+                        )
+                        public_url = supabase.storage.from_('avatars').get_public_url(path)
+                        User.objects.filter(id=user_id).update(avatar_url=public_url)
+                    except Exception as e:
+                        import logging
+                        logging.getLogger(__name__).error(f"Avatar upload failed for admin-created user {user_id}: {e}")
+                
+                threading.Thread(target=_upload_avatar, daemon=True).start()
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).error(f"Avatar read failed for admin-created user {user.id}: {e}")
+        
+        # Send verification email in background (non-blocking)
+        import threading
+        threading.Thread(target=send_verification_email, args=(user,), daemon=True).start()
+        
         return user
 
 
+
 class AdminUserUpdateSerializer(serializers.ModelSerializer):
-    """Serializer for admin to update users."""
+    """Serializer for admin to update users with Supabase avatar upload."""
+    
+    avatar = serializers.ImageField(required=False, allow_null=True, write_only=True)
     
     class Meta:
         model = User
         fields = [
             'email', 'first_name', 'last_name',
             'phone', 'wilaya', 'role', 'status',
-            'is_staff', 'is_active', 'email_verified'
+            'is_staff', 'is_active', 'email_verified', 'avatar',
+            'language', 'newsletter_subscribed'
         ]
+    
+    def validate_avatar(self, value):
+        """Validate avatar file size and type."""
+        if value:
+            max_size = 5 * 1024 * 1024
+            if value.size > max_size:
+                raise serializers.ValidationError(
+                    "La taille du fichier ne doit pas dépasser 5 Mo."
+                )
+            allowed_extensions = ['jpg', 'jpeg', 'png', 'webp', 'gif']
+            file_extension = value.name.split('.')[-1].lower()
+            if file_extension not in allowed_extensions:
+                raise serializers.ValidationError(
+                    f"Format non supporté. Formats acceptés: {', '.join(allowed_extensions)}"
+                )
+        return value
+    
+    def update(self, instance, validated_data):
+        """Handle avatar upload to Supabase Storage."""
+        avatar_file = validated_data.pop('avatar', None)
+        
+        # Upload avatar to Supabase if provided
+        if avatar_file:
+            # Delete old avatar if exists
+            if instance.avatar_url:
+                delete_avatar(instance.avatar_url)
+            
+            # Upload new avatar
+            public_url = upload_avatar(avatar_file, str(instance.id))
+            instance.avatar_url = public_url
+        
+        # Update other fields
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        
+        instance.save()
+        return instance
 
 
 # =============================================================================

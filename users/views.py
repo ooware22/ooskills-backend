@@ -14,9 +14,14 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import update_session_auth_hash
+
+from .storage import upload_avatar, delete_avatar
+from .avatar_serializer import AvatarUploadSerializer
+from .email import send_verification_email, verify_email_token
 
 from .models import User, UserRole, UserStatus, ReferralCode, Referral, ALGERIAN_WILAYAS
 from .serializers import (
@@ -44,16 +49,23 @@ class RegisterView(generics.CreateAPIView):
     """
     POST /api/auth/register/
     
-    Register a new user account.
+    Register a new user account and send verification email.
+    Supports multipart/form-data for avatar upload.
     """
     queryset = User.objects.all()
     permission_classes = [AllowAny]
+    authentication_classes = []  # Skip all auth for this public endpoint
     serializer_class = UserRegistrationSerializer
+    parser_classes = [MultiPartParser, FormParser]
     
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
+        
+        # Send verification email in background (non-blocking)
+        import threading
+        threading.Thread(target=send_verification_email, args=(user,), daemon=True).start()
         
         # Generate JWT tokens for the new user
         refresh = RefreshToken.for_user(user)
@@ -66,6 +78,78 @@ class RegisterView(generics.CreateAPIView):
             },
             'message': 'Inscription réussie. Veuillez vérifier votre email.'
         }, status=status.HTTP_201_CREATED)
+
+
+class VerifyEmailView(APIView):
+    """
+    POST /api/auth/verify-email/
+    
+    Verify user email with token.
+    """
+    permission_classes = [AllowAny]
+    authentication_classes = []  # Skip all auth for this public endpoint
+    
+    def post(self, request):
+        import time
+        start = time.time()
+        print(f"[VERIFY-EMAIL] START")
+        
+        token = request.data.get('token')
+        print(f"[VERIFY-EMAIL] Token extracted: {bool(token)} ({time.time()-start:.2f}s)")
+        
+        if not token:
+            return Response({
+                'error': 'Token requis.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        success, user, message = verify_email_token(token)
+        print(f"[VERIFY-EMAIL] verify_email_token done: success={success} ({time.time()-start:.2f}s)")
+        
+        if success:
+            return Response({
+                'message': message,
+                'user': UserProfileSerializer(user).data if user else None
+            })
+        else:
+            return Response({
+                'error': message
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+
+class ResendVerificationView(APIView):
+    """
+    POST /api/auth/resend-verification/
+    
+    Resend verification email.
+    """
+    permission_classes = [AllowAny]
+    
+    def post(self, request):
+        email = request.data.get('email')
+        
+        if not email:
+            return Response({
+                'error': 'Email requis.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            user = User.objects.get(email=email)
+        except User.DoesNotExist:
+            # Don't reveal if email exists
+            return Response({
+                'message': 'Si cet email existe, un lien de vérification a été envoyé.'
+            })
+        
+        if user.email_verified:
+            return Response({
+                'message': 'Cet email est déjà vérifié.'
+            })
+        
+        send_verification_email(user)
+        
+        return Response({
+            'message': 'Si cet email existe, un lien de vérification a été envoyé.'
+        })
 
 
 class LoginView(TokenObtainPairView):
@@ -85,8 +169,10 @@ class ProfileView(generics.RetrieveUpdateAPIView):
     PATCH /api/auth/me/
     
     Get or update current user's profile.
+    Supports multipart/form-data for avatar upload.
     """
     permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
     
     def get_serializer_class(self):
         if self.request.method in ['PUT', 'PATCH']:
@@ -154,6 +240,44 @@ class LogoutView(APIView):
         })
 
 
+class UploadAvatarView(APIView):
+    """
+    POST /api/auth/upload-avatar/
+    
+    Upload user profile photo to Supabase Storage.
+    """
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+    
+    def post(self, request):
+        serializer = AvatarUploadSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        
+        avatar_file = serializer.validated_data['avatar']
+        user = request.user
+        
+        try:
+            # Delete old avatar if exists
+            if user.avatar_url:
+                delete_avatar(user.avatar_url)
+            
+            # Upload new avatar
+            public_url = upload_avatar(avatar_file, str(user.id))
+            
+            # Update user's avatar_url
+            user.avatar_url = public_url
+            user.save(update_fields=['avatar_url', 'updated_at'])
+            
+            return Response({
+                'message': 'Photo de profil mise à jour avec succès.',
+                'avatar_url': public_url
+            })
+        except Exception as e:
+            return Response({
+                'error': 'Échec du téléchargement de la photo.',
+                'detail': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 # =============================================================================
 # REFERRAL VIEWS
 # =============================================================================
@@ -213,13 +337,14 @@ class AdminUserViewSet(viewsets.ModelViewSet):
     Admin CRUD for Users.
     
     GET /api/admin/users/ - List all users
-    POST /api/admin/users/ - Create user
+    POST /api/admin/users/ - Create user (supports avatar upload)
     GET /api/admin/users/{id}/ - Get user
-    PUT/PATCH /api/admin/users/{id}/ - Update user
+    PUT/PATCH /api/admin/users/{id}/ - Update user (supports avatar upload)
     DELETE /api/admin/users/{id}/ - Soft delete user
     """
     queryset = User.objects.all().order_by('-date_joined')
     permission_classes = [IsAuthenticated, IsAdminOrSuperAdmin]
+    parser_classes = [MultiPartParser, FormParser]
     
     def get_serializer_class(self):
         if self.action == 'create':
