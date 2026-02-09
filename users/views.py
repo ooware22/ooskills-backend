@@ -528,7 +528,10 @@ class SocialLoginView(APIView):
         """
         Get existing user by email or create new one.
         Social login users are auto-verified and active.
+        Also creates a corresponding Supabase Auth user for new users.
         """
+        from .storage import create_supabase_auth_user
+        
         email = user_data.get('email')
         
         if not email:
@@ -548,7 +551,24 @@ class SocialLoginView(APIView):
             return user
             
         except User.DoesNotExist:
-            # Create new user
+            # Create user in Supabase Auth first
+            supabase_id = None
+            try:
+                supabase_user = create_supabase_auth_user(
+                    email=email,
+                    user_metadata={
+                        'first_name': user_data.get('first_name', ''),
+                        'last_name': user_data.get('last_name', ''),
+                        'auth_provider': provider,
+                    }
+                )
+                supabase_id = supabase_user['id']
+            except Exception as e:
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.warning(f"Supabase Auth user creation failed for {email}: {str(e)}")
+            
+            # Create Django user
             user = User.objects.create_user(
                 email=email,
                 first_name=user_data.get('first_name', ''),
@@ -557,6 +577,7 @@ class SocialLoginView(APIView):
                 email_verified=True,
                 status=UserStatus.ACTIVE,
                 auth_provider=auth_provider,
+                supabase_id=supabase_id,
             )
             return user
 
