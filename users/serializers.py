@@ -372,6 +372,34 @@ class ChangePasswordSerializer(serializers.Serializer):
         return value
 
 
+class ForgotPasswordSerializer(serializers.Serializer):
+    """Serializer for forgot password request."""
+    
+    email = serializers.EmailField(required=True)
+
+
+class ResetPasswordSerializer(serializers.Serializer):
+    """Serializer for password reset (with token)."""
+    
+    token = serializers.CharField(required=True)
+    new_password = serializers.CharField(
+        required=True,
+        validators=[validate_password],
+        style={'input_type': 'password'}
+    )
+    new_password_confirm = serializers.CharField(
+        required=True,
+        style={'input_type': 'password'}
+    )
+    
+    def validate(self, attrs):
+        if attrs['new_password'] != attrs['new_password_confirm']:
+            raise serializers.ValidationError({
+                'new_password_confirm': "Les mots de passe ne correspondent pas."
+            })
+        return attrs
+
+
 # =============================================================================
 # ADMIN SERIALIZERS
 # =============================================================================

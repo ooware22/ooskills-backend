@@ -38,6 +38,13 @@ class UserStatus(models.TextChoices):
     DELETED = 'DELETED', 'Supprimé'
 
 
+class AuthProvider(models.TextChoices):
+    """Authentication provider used for user registration."""
+    EMAIL = 'EMAIL', 'Email'
+    GOOGLE = 'GOOGLE', 'Google'
+    FACEBOOK = 'FACEBOOK', 'Facebook'
+
+
 # =============================================================================
 # ALGERIAN WILAYAS
 # =============================================================================
@@ -298,6 +305,14 @@ class User(AbstractBaseUser, PermissionsMixin):
         choices=UserStatus.choices,
         default=UserStatus.PENDING,
         db_index=True
+    )
+    
+    # Authentication provider
+    auth_provider = models.CharField(
+        'Fournisseur d\'authentification',
+        max_length=20,
+        choices=AuthProvider.choices,
+        default=AuthProvider.EMAIL,
     )
     
     # Django admin permissions
@@ -601,4 +616,59 @@ class EmailVerificationToken(models.Model):
         self.user.status = UserStatus.ACTIVE
         self.user.save(update_fields=['email_verified', 'status', 'updated_at'])
         
+        return True
+
+
+# =============================================================================
+# PASSWORD RESET TOKEN MODEL
+# =============================================================================
+
+class PasswordResetToken(models.Model):
+    """
+    Token for password reset (forgot password flow).
+    """
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False
+    )
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='password_reset_tokens'
+    )
+    token = models.CharField(
+        max_length=64,
+        unique=True,
+        db_index=True
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    is_used = models.BooleanField(default=False)
+    
+    class Meta:
+        verbose_name = 'Token de réinitialisation'
+        verbose_name_plural = 'Tokens de réinitialisation'
+        ordering = ['-created_at']
+    
+    def __str__(self):
+        return f"Password reset token for {self.user.email}"
+    
+    @property
+    def is_expired(self):
+        """Check if token has expired."""
+        return timezone.now() > self.expires_at
+    
+    @property
+    def is_valid(self):
+        """Check if token is still valid (not used and not expired)."""
+        return not self.is_used and not self.is_expired
+    
+    def use_token(self):
+        """Mark token as used."""
+        if not self.is_valid:
+            return False
+        
+        self.is_used = True
+        self.save(update_fields=['is_used'])
         return True

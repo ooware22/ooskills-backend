@@ -21,14 +21,16 @@ from django.contrib.auth import update_session_auth_hash
 
 from .storage import upload_avatar, delete_avatar
 from .avatar_serializer import AvatarUploadSerializer
-from .email import send_verification_email, verify_email_token
+from .email import send_verification_email, verify_email_token, send_password_reset_email, verify_password_reset_token
 
-from .models import User, UserRole, UserStatus, ReferralCode, Referral, ALGERIAN_WILAYAS
+from .models import User, UserRole, UserStatus, AuthProvider, ReferralCode, Referral, ALGERIAN_WILAYAS
 from .serializers import (
     UserRegistrationSerializer,
     UserProfileSerializer,
     UserProfileUpdateSerializer,
     ChangePasswordSerializer,
+    ForgotPasswordSerializer,
+    ResetPasswordSerializer,
     AdminUserSerializer,
     AdminUserCreateSerializer,
     AdminUserUpdateSerializer,
@@ -221,6 +223,80 @@ class ChangePasswordView(generics.UpdateAPIView):
         })
 
 
+class ForgotPasswordView(APIView):
+    """
+    POST /api/auth/forgot-password/
+    
+    Request password reset email.
+    Always returns success to avoid revealing if email exists.
+    """
+    permission_classes = [AllowAny]
+    authentication_classes = []
+    
+    def post(self, request):
+        serializer = ForgotPasswordSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        
+        email = serializer.validated_data['email']
+        
+        try:
+            user = User.objects.get(email=email)
+            
+            # Only send if user account is not deleted
+            if user.status != UserStatus.DELETED:
+                # Send reset email in background (non-blocking)
+                import threading
+                threading.Thread(
+                    target=send_password_reset_email,
+                    args=(user,),
+                    daemon=True
+                ).start()
+        except User.DoesNotExist:
+            pass  # Don't reveal if email exists
+        
+        # Always return success message
+        return Response({
+            'message': 'Si cet email existe, un lien de réinitialisation a été envoyé.'
+        })
+
+
+class ResetPasswordView(APIView):
+    """
+    POST /api/auth/reset-password/
+    
+    Reset password using token from email.
+    """
+    permission_classes = [AllowAny]
+    authentication_classes = []
+    
+    def post(self, request):
+        serializer = ResetPasswordSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        
+        token = serializer.validated_data['token']
+        new_password = serializer.validated_data['new_password']
+        
+        success, user, message = verify_password_reset_token(token)
+        
+        if not success:
+            return Response({
+                'error': message
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Mark token as used
+        from .models import PasswordResetToken
+        reset_token = PasswordResetToken.objects.get(token=token)
+        reset_token.use_token()
+        
+        # Set new password
+        user.set_password(new_password)
+        user.save(update_fields=['password', 'updated_at'])
+        
+        return Response({
+            'message': 'Mot de passe réinitialisé avec succès. Vous pouvez maintenant vous connecter.'
+        })
+
+
 class LogoutView(APIView):
     """
     POST /api/auth/logout/
@@ -277,6 +353,212 @@ class UploadAvatarView(APIView):
                 'error': 'Échec du téléchargement de la photo.',
                 'detail': str(e)
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class SocialLoginView(APIView):
+    """
+    POST /api/auth/social-login/
+    
+    Authenticate with Google or Facebook OAuth.
+    Accepts authorization code from frontend, exchanges it for user data,
+    and returns JWT tokens.
+    
+    Request body:
+        {
+            "provider": "google" | "facebook",
+            "code": "<authorization_code>",
+            "redirect_uri": "<redirect_uri_used_in_frontend>"
+        }
+    """
+    permission_classes = [AllowAny]
+    authentication_classes = []
+    
+    def post(self, request):
+        provider = request.data.get('provider', '').lower()
+        code = request.data.get('code')
+        redirect_uri = request.data.get('redirect_uri')
+        
+        if not code:
+            return Response(
+                {'error': 'Authorization code is required.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        if not redirect_uri:
+            return Response(
+                {'error': 'Redirect URI is required.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        if provider not in ('google', 'facebook'):
+            return Response(
+                {'error': 'Invalid provider. Must be "google" or "facebook".'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            if provider == 'google':
+                user_data = self._google_authenticate(code, redirect_uri)
+            else:
+                user_data = self._facebook_authenticate(code, redirect_uri)
+        except Exception as e:
+            return Response(
+                {'error': f'Authentication failed: {str(e)}'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Get or create the user
+        user = self._get_or_create_user(user_data, provider)
+        
+        # Generate JWT tokens
+        refresh = RefreshToken.for_user(user)
+        
+        return Response({
+            'user': UserProfileSerializer(user).data,
+            'tokens': {
+                'refresh': str(refresh),
+                'access': str(refresh.access_token),
+            },
+            'message': 'Social login successful.'
+        })
+    
+    def _google_authenticate(self, code, redirect_uri):
+        """
+        Exchange Google authorization code for user data.
+        """
+        import requests as http_requests
+        from django.conf import settings as django_settings
+        
+        # Exchange code for access token
+        token_response = http_requests.post(
+            'https://oauth2.googleapis.com/token',
+            data={
+                'code': code,
+                'client_id': django_settings.GOOGLE_CLIENT_ID,
+                'client_secret': django_settings.GOOGLE_CLIENT_SECRET,
+                'redirect_uri': redirect_uri,
+                'grant_type': 'authorization_code',
+            },
+            timeout=10,
+        )
+        
+        if token_response.status_code != 200:
+            raise ValueError(f'Google token exchange failed: {token_response.text}')
+        
+        token_data = token_response.json()
+        access_token = token_data.get('access_token')
+        
+        if not access_token:
+            raise ValueError('No access token received from Google.')
+        
+        # Fetch user profile
+        profile_response = http_requests.get(
+            'https://www.googleapis.com/oauth2/v2/userinfo',
+            headers={'Authorization': f'Bearer {access_token}'},
+            timeout=10,
+        )
+        
+        if profile_response.status_code != 200:
+            raise ValueError('Failed to fetch Google user profile.')
+        
+        profile = profile_response.json()
+        
+        return {
+            'email': profile.get('email'),
+            'first_name': profile.get('given_name', ''),
+            'last_name': profile.get('family_name', ''),
+            'avatar_url': profile.get('picture'),
+        }
+    
+    def _facebook_authenticate(self, code, redirect_uri):
+        """
+        Exchange Facebook authorization code for user data.
+        """
+        import requests as http_requests
+        from django.conf import settings as django_settings
+        
+        # Exchange code for access token
+        token_response = http_requests.get(
+            'https://graph.facebook.com/v18.0/oauth/access_token',
+            params={
+                'client_id': django_settings.FACEBOOK_APP_ID,
+                'client_secret': django_settings.FACEBOOK_APP_SECRET,
+                'redirect_uri': redirect_uri,
+                'code': code,
+            },
+            timeout=10,
+        )
+        
+        if token_response.status_code != 200:
+            raise ValueError(f'Facebook token exchange failed: {token_response.text}')
+        
+        token_data = token_response.json()
+        access_token = token_data.get('access_token')
+        
+        if not access_token:
+            raise ValueError('No access token received from Facebook.')
+        
+        # Fetch user profile
+        profile_response = http_requests.get(
+            'https://graph.facebook.com/me',
+            params={
+                'access_token': access_token,
+                'fields': 'id,email,first_name,last_name,picture.type(large)',
+            },
+            timeout=10,
+        )
+        
+        if profile_response.status_code != 200:
+            raise ValueError('Failed to fetch Facebook user profile.')
+        
+        profile = profile_response.json()
+        
+        # Extract picture URL
+        picture_data = profile.get('picture', {}).get('data', {})
+        avatar_url = picture_data.get('url') if not picture_data.get('is_silhouette') else None
+        
+        return {
+            'email': profile.get('email'),
+            'first_name': profile.get('first_name', ''),
+            'last_name': profile.get('last_name', ''),
+            'avatar_url': avatar_url,
+        }
+    
+    def _get_or_create_user(self, user_data, provider):
+        """
+        Get existing user by email or create new one.
+        Social login users are auto-verified and active.
+        """
+        email = user_data.get('email')
+        
+        if not email:
+            raise ValueError('Email not provided by the OAuth provider. Please ensure your account has an email.')
+        
+        auth_provider = AuthProvider.GOOGLE if provider == 'google' else AuthProvider.FACEBOOK
+        
+        try:
+            # User already exists — just log them in
+            user = User.objects.get(email=email)
+            
+            # Update avatar if not set
+            if not user.avatar_url and user_data.get('avatar_url'):
+                user.avatar_url = user_data['avatar_url']
+                user.save(update_fields=['avatar_url', 'updated_at'])
+            
+            return user
+            
+        except User.DoesNotExist:
+            # Create new user
+            user = User.objects.create_user(
+                email=email,
+                first_name=user_data.get('first_name', ''),
+                last_name=user_data.get('last_name', ''),
+                avatar_url=user_data.get('avatar_url'),
+                email_verified=True,
+                status=UserStatus.ACTIVE,
+                auth_provider=auth_provider,
+            )
+            return user
 
 # =============================================================================
 # REFERRAL VIEWS

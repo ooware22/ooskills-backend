@@ -245,6 +245,22 @@ SUPABASE_JWT_SECRET = os.environ.get('SUPABASE_JWT_SECRET', '')
 
 
 # =============================================================================
+# GOOGLE OAUTH CONFIGURATION
+# =============================================================================
+
+GOOGLE_CLIENT_ID = os.environ.get('GOOGLE_CLIENT_ID', '')
+GOOGLE_CLIENT_SECRET = os.environ.get('GOOGLE_CLIENT_SECRET', '')
+
+
+# =============================================================================
+# FACEBOOK OAUTH CONFIGURATION
+# =============================================================================
+
+FACEBOOK_APP_ID = os.environ.get('FACEBOOK_APP_ID', '')
+FACEBOOK_APP_SECRET = os.environ.get('FACEBOOK_APP_SECRET', '')
+
+
+# =============================================================================
 # CORS CONFIGURATION
 # =============================================================================
 

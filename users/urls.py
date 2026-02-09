@@ -30,10 +30,13 @@ from .views import (
     LoginView,
     ProfileView,
     ChangePasswordView,
+    ForgotPasswordView,
+    ResetPasswordView,
     LogoutView,
     UploadAvatarView,
     VerifyEmailView,
     ResendVerificationView,
+    SocialLoginView,
     MyReferralCodeView,
     MyReferralsView,
     AdminUserViewSet,
@@ -65,10 +68,13 @@ auth_urlpatterns = [
     path('resend-verification/', ResendVerificationView.as_view(), name='resend-verification'),
     path('me/', ProfileView.as_view(), name='profile'),
     path('change-password/', ChangePasswordView.as_view(), name='change-password'),
+    path('forgot-password/', ForgotPasswordView.as_view(), name='forgot-password'),
+    path('reset-password/', ResetPasswordView.as_view(), name='reset-password'),
     path('logout/', LogoutView.as_view(), name='logout'),
     path('upload-avatar/', UploadAvatarView.as_view(), name='upload-avatar'),
     path('my-referral-code/', MyReferralCodeView.as_view(), name='my-referral-code'),
     path('my-referrals/', MyReferralsView.as_view(), name='my-referrals'),
+    path('social-login/', SocialLoginView.as_view(), name='social-login'),
 ]
 
 # Utility URL patterns
