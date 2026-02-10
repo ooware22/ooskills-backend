@@ -531,6 +531,8 @@ class SocialLoginView(APIView):
         Also creates a corresponding Supabase Auth user for new users.
         """
         from .storage import create_supabase_auth_user
+        import logging
+        logger = logging.getLogger(__name__)
         
         email = user_data.get('email')
         
@@ -542,24 +544,22 @@ class SocialLoginView(APIView):
         try:
             # User already exists — just log them in
             user = User.objects.get(email=email)
+            logger.info(f"Social login: existing user found for {email}, supabase_id={user.supabase_id}")
             
             # Create Supabase Auth user if missing
             if not user.supabase_id:
-                try:
-                    supabase_user = create_supabase_auth_user(
-                        email=email,
-                        user_metadata={
-                            'first_name': user.first_name,
-                            'last_name': user.last_name,
-                            'auth_provider': provider,
-                        }
-                    )
-                    user.supabase_id = supabase_user['id']
-                    user.save(update_fields=['supabase_id', 'updated_at'])
-                except Exception as e:
-                    import logging
-                    logger = logging.getLogger(__name__)
-                    logger.warning(f"Supabase Auth user creation failed for existing user {email}: {str(e)}")
+                logger.info(f"Social login: creating Supabase Auth user for existing user {email}")
+                supabase_user = create_supabase_auth_user(
+                    email=email,
+                    user_metadata={
+                        'first_name': user.first_name,
+                        'last_name': user.last_name,
+                        'auth_provider': provider,
+                    }
+                )
+                user.supabase_id = supabase_user['id']
+                user.save(update_fields=['supabase_id', 'updated_at'])
+                logger.info(f"Social login: Supabase Auth user created for {email}, id={supabase_user['id']}")
             
             # Update avatar if not set
             if not user.avatar_url and user_data.get('avatar_url'):
@@ -569,22 +569,19 @@ class SocialLoginView(APIView):
             return user
             
         except User.DoesNotExist:
+            logger.info(f"Social login: creating new user for {email}")
+            
             # Create user in Supabase Auth first
-            supabase_id = None
-            try:
-                supabase_user = create_supabase_auth_user(
-                    email=email,
-                    user_metadata={
-                        'first_name': user_data.get('first_name', ''),
-                        'last_name': user_data.get('last_name', ''),
-                        'auth_provider': provider,
-                    }
-                )
-                supabase_id = supabase_user['id']
-            except Exception as e:
-                import logging
-                logger = logging.getLogger(__name__)
-                logger.warning(f"Supabase Auth user creation failed for {email}: {str(e)}")
+            supabase_user = create_supabase_auth_user(
+                email=email,
+                user_metadata={
+                    'first_name': user_data.get('first_name', ''),
+                    'last_name': user_data.get('last_name', ''),
+                    'auth_provider': provider,
+                }
+            )
+            supabase_id = supabase_user['id']
+            logger.info(f"Social login: Supabase Auth user created for {email}, id={supabase_id}")
             
             # Create Django user
             user = User.objects.create_user(
@@ -597,6 +594,7 @@ class SocialLoginView(APIView):
                 auth_provider=auth_provider,
                 supabase_id=supabase_id,
             )
+            logger.info(f"Social login: Django user created for {email}, id={user.id}")
             return user
 
 # =============================================================================
