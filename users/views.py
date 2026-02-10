@@ -543,6 +543,24 @@ class SocialLoginView(APIView):
             # User already exists — just log them in
             user = User.objects.get(email=email)
             
+            # Create Supabase Auth user if missing
+            if not user.supabase_id:
+                try:
+                    supabase_user = create_supabase_auth_user(
+                        email=email,
+                        user_metadata={
+                            'first_name': user.first_name,
+                            'last_name': user.last_name,
+                            'auth_provider': provider,
+                        }
+                    )
+                    user.supabase_id = supabase_user['id']
+                    user.save(update_fields=['supabase_id', 'updated_at'])
+                except Exception as e:
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    logger.warning(f"Supabase Auth user creation failed for existing user {email}: {str(e)}")
+            
             # Update avatar if not set
             if not user.avatar_url and user_data.get('avatar_url'):
                 user.avatar_url = user_data['avatar_url']
