@@ -33,7 +33,8 @@ ALLOWED_HOSTS = [
     'localhost',
     '127.0.0.1',
     '.onrender.com',  # All Render subdomains
-    'ooskills-backend.onrender.com',  # Your specific Render domain
+    'ooskills-backend.onrender.com',
+      # Your specific Render domain
 ]
 
 # Add custom domain from environment variable if set

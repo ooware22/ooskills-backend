@@ -70,6 +70,12 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
                 'detail': 'Ce compte a été suspendu.'
             })
         
+        # Check if email is verified
+        if not user.email_verified:
+            raise serializers.ValidationError({
+                'detail': 'Votre email n\'est pas encore vérifié. Veuillez vérifier votre boîte de réception.'
+            })
+        
         # Authenticate user (checks password)
         authenticated_user = authenticate(
             request=self.context.get('request'),
