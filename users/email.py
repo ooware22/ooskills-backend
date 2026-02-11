@@ -5,12 +5,15 @@ Provides functions for sending verification and notification emails.
 """
 
 import secrets
+import logging
 from datetime import timedelta
 from django.conf import settings
 from django.core.mail import send_mail
 from django.template.loader import render_to_string
 from django.utils.html import strip_tags
 from django.utils import timezone
+
+logger = logging.getLogger(__name__)
 
 
 def generate_verification_token(user):
@@ -126,6 +129,8 @@ Si vous n'avez pas créé de compte sur OOSkills, ignorez simplement cet email.
         """
         
         # Send email
+        logger.info(f"[EMAIL] Sending verification email to {user.email} via {settings.EMAIL_BACKEND}")
+        logger.info(f"[EMAIL] SMTP Host: {settings.EMAIL_HOST}:{settings.EMAIL_PORT}, TLS: {settings.EMAIL_USE_TLS}, From: {settings.DEFAULT_FROM_EMAIL}")
         send_mail(
             subject=subject,
             message=plain_message,
@@ -134,10 +139,11 @@ Si vous n'avez pas créé de compte sur OOSkills, ignorez simplement cet email.
             html_message=html_message,
             fail_silently=False,
         )
+        logger.info(f"[EMAIL] Verification email sent successfully to {user.email}")
         
         return True
     except Exception as e:
-        print(f"Error sending verification email: {e}")
+        logger.error(f"[EMAIL] Error sending verification email to {user.email}: {type(e).__name__}: {e}", exc_info=True)
         return False
 
 
@@ -366,6 +372,8 @@ Si vous n'avez pas demandé la réinitialisation de votre mot de passe, ignorez 
         """
         
         # Send email
+        logger.info(f"[EMAIL] Sending password reset email to {user.email} via {settings.EMAIL_BACKEND}")
+        logger.info(f"[EMAIL] SMTP Host: {settings.EMAIL_HOST}:{settings.EMAIL_PORT}, TLS: {settings.EMAIL_USE_TLS}, From: {settings.DEFAULT_FROM_EMAIL}")
         send_mail(
             subject=subject,
             message=plain_message,
@@ -374,10 +382,11 @@ Si vous n'avez pas demandé la réinitialisation de votre mot de passe, ignorez 
             html_message=html_message,
             fail_silently=False,
         )
+        logger.info(f"[EMAIL] Password reset email sent successfully to {user.email}")
         
         return True
     except Exception as e:
-        print(f"Error sending password reset email: {e}")
+        logger.error(f"[EMAIL] Error sending password reset email to {user.email}: {type(e).__name__}: {e}", exc_info=True)
         return False
 
 

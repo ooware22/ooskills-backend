@@ -234,6 +234,9 @@ class ForgotPasswordView(APIView):
     authentication_classes = []
     
     def post(self, request):
+        import logging
+        logger = logging.getLogger(__name__)
+        
         serializer = ForgotPasswordSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         
@@ -244,15 +247,13 @@ class ForgotPasswordView(APIView):
             
             # Only send if user account is not deleted
             if user.status != UserStatus.DELETED:
-                # Send reset email in background (non-blocking)
-                import threading
-                threading.Thread(
-                    target=send_password_reset_email,
-                    args=(user,),
-                    daemon=True
-                ).start()
+                logger.info(f"[FORGOT-PASSWORD] Sending reset email to {email}")
+                result = send_password_reset_email(user)
+                logger.info(f"[FORGOT-PASSWORD] Email send result for {email}: {result}")
         except User.DoesNotExist:
             pass  # Don't reveal if email exists
+        except Exception as e:
+            logger.error(f"[FORGOT-PASSWORD] Unexpected error for {email}: {type(e).__name__}: {e}", exc_info=True)
         
         # Always return success message
         return Response({
