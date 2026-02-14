@@ -23,10 +23,11 @@ from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView, Sp
 urlpatterns = [
     path('admin/', admin.site.urls),
     
-    # API endpoints (users and content)
+    # API endpoints (users, content, formation)
     path('api/', include([
         path('', include('users.urls')),
         path('', include('content.urls')),
+        path('formation/', include('formation.urls')),
     ])),
     
     # API Documentation (Swagger/OpenAPI)
