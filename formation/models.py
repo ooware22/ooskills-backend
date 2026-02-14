@@ -16,6 +16,7 @@ from django.utils import timezone
 from django.utils.text import slugify
 
 from formation.storage import SupabaseAudioStorage, audio_upload_path
+from formation.storage import SupabaseImageStorage, course_image_upload_path
 from content.models import (
     TranslatableFieldMixin,
     validate_translation_json,
@@ -110,9 +111,12 @@ class Course(models.Model):
     rating = models.DecimalField(max_digits=3, decimal_places=2, default=0)
     reviews = models.PositiveIntegerField(default=0)
     students = models.PositiveIntegerField(default=0)
-    image = models.URLField(
-        'Image URL', max_length=600, blank=True,
-        help_text='Thumbnail URL in Supabase Storage (courses/ bucket)',
+    image = models.ImageField(
+        'Image',
+        upload_to=course_image_upload_path,
+        storage=SupabaseImageStorage(),
+        blank=True,
+        help_text='Course thumbnail — uploaded to Supabase images/ bucket',
     )
     date = models.DateField('Date de publication', null=True, blank=True)
     price = models.PositiveIntegerField('Prix (DZD)', default=0)

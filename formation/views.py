@@ -123,6 +123,8 @@ class LessonViewSet(viewsets.ModelViewSet):
         user = self.request.user
         qs = Lesson.objects.select_related('section__course')
         if not (user.is_authenticated and user.is_admin):
+            if not user.is_authenticated:
+                return qs.none()
             enrolled_courses = Enrollment.objects.filter(
                 user=user
             ).values_list('course_id', flat=True)

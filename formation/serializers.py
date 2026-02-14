@@ -60,6 +60,24 @@ class LessonSerializer(serializers.ModelSerializer):
             'duration_seconds', 'audioUrl', 'content', 'slide_type',
         ]
 
+    def to_internal_value(self, data):
+        """Parse JSON string fields that arrive via multipart/form-data."""
+        import json
+        if hasattr(data, 'getlist'):  # QueryDict from multipart
+            # Build a plain mutable dict instead of deep-copying QueryDict
+            # (deep copy fails on uploaded file objects)
+            mutable = {}
+            for key in data:
+                mutable[key] = data[key]
+            content_raw = mutable.get('content')
+            if isinstance(content_raw, str):
+                try:
+                    mutable['content'] = json.loads(content_raw)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            return super().to_internal_value(mutable)
+        return super().to_internal_value(data)
+
 
 class LessonListSerializer(serializers.ModelSerializer):
     """Lightweight: no content blob, for section listings."""
@@ -86,7 +104,7 @@ class SectionSerializer(serializers.ModelSerializer):
 
 class SectionDetailSerializer(serializers.ModelSerializer):
     """Section with nested lessons for course detail / player."""
-    lessons_list = LessonListSerializer(source='lessons', many=True, read_only=True)
+    lessons_list = LessonSerializer(source='lessons', many=True, read_only=True)
     quiz = QuizSerializer(read_only=True)
     lessons = serializers.IntegerField(source='lessons_count', read_only=True)
     duration = serializers.CharField(source='total_duration', read_only=True)
