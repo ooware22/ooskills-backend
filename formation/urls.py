@@ -23,7 +23,9 @@ router.register(r'quiz-questions', views.QuizQuestionViewSet, basename='quiz-que
 router.register(r'orders', views.OrderViewSet, basename='order')
 router.register(r'certificates', views.CertificateViewSet, basename='certificate')
 router.register(r'share-tokens', views.ShareTokenViewSet, basename='share-token')
+router.register(r'final-quiz', views.FinalQuizViewSet, basename='final-quiz')
 
 urlpatterns = [
     path('', include(router.urls)),
 ]
+

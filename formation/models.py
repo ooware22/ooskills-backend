@@ -363,6 +363,41 @@ class QuizQuestion(models.Model):
 
 
 # =============================================================================
+# FINAL QUIZ (course-level exam for certificate)
+# =============================================================================
+
+class FinalQuiz(models.Model):
+    """Course-level final exam — random questions from all section quizzes."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    course = models.OneToOneField(
+        Course, on_delete=models.CASCADE, related_name='final_quiz',
+    )
+    title = models.CharField('Titre', max_length=300, default='Examen Final')
+    num_questions = models.PositiveIntegerField(
+        default=20, help_text='Number of random questions to pull from section quizzes',
+    )
+    pass_threshold = models.PositiveIntegerField(
+        default=70, help_text='Percentage required to pass (0-100)',
+    )
+    max_attempts = models.PositiveIntegerField(
+        default=3, help_text='0 = unlimited',
+    )
+    xp_reward = models.PositiveIntegerField(
+        default=50, help_text='XP points awarded on pass',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'Examen Final'
+        verbose_name_plural = 'Examens Finaux'
+
+    def __str__(self):
+        return f'Final Quiz — {self.course.title}'
+
+
+# =============================================================================
 # ENROLLMENT
 # =============================================================================
 
@@ -515,6 +550,49 @@ class QuizAttempt(models.Model):
 
 
 # =============================================================================
+# FINAL QUIZ ATTEMPT
+# =============================================================================
+
+class FinalQuizAttempt(models.Model):
+    """A single attempt at the course-level final quiz."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    enrollment = models.ForeignKey(
+        Enrollment, on_delete=models.CASCADE, related_name='final_quiz_attempts',
+    )
+    final_quiz = models.ForeignKey(
+        FinalQuiz, on_delete=models.CASCADE, related_name='attempts',
+    )
+    score = models.DecimalField(
+        max_digits=5, decimal_places=2, default=0,
+        help_text='Score percentage 0-100',
+    )
+    answers = models.JSONField(
+        default=dict, help_text='Map of question_id -> selected_option_index',
+    )
+    questions_snapshot = models.JSONField(
+        default=list,
+        help_text='Snapshot of random question IDs selected for this attempt',
+    )
+    passed = models.BooleanField(default=False)
+    xp_earned = models.PositiveIntegerField(default=0)
+    feedback = models.JSONField(
+        default=list, blank=True,
+        help_text='Per-question feedback returned to frontend',
+    )
+    attempt_number = models.PositiveIntegerField(default=1)
+    submitted_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = 'Tentative examen final'
+        verbose_name_plural = 'Tentatives examen final'
+        ordering = ['-submitted_at']
+
+    def __str__(self):
+        return f'{self.enrollment.user} — Final Quiz (#{self.attempt_number})'
+
+
+# =============================================================================
 # ORDER & ORDER ITEMS
 # =============================================================================
 
@@ -590,7 +668,7 @@ class OrderItem(models.Model):
 # =============================================================================
 
 class Certificate(models.Model):
-    """Certificate issued upon course completion (Certificat)."""
+    """Certificate issued upon passing the final quiz (Certificat)."""
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.ForeignKey(
@@ -602,11 +680,15 @@ class Certificate(models.Model):
     )
     score = models.DecimalField(
         max_digits=5, decimal_places=2, default=0,
-        help_text='Final score achieved',
+        help_text='Final quiz score achieved',
     )
     code = models.CharField(
         max_length=40, unique=True, db_index=True,
         help_text='Unique verification code',
+    )
+    pdf_url = models.URLField(
+        'PDF URL', max_length=500, blank=True,
+        help_text='URL to the generated PDF certificate in Supabase',
     )
     issuedAt = models.DateTimeField(default=timezone.now)
 

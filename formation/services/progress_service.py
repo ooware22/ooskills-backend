@@ -81,5 +81,7 @@ def _recalculate_enrollment_progress(enrollment: Enrollment):
     if new_progress >= 100 and enrollment.status == EnrollmentStatus.ACTIVE:
         enrollment.status = EnrollmentStatus.COMPLETED
         enrollment.completed_at = timezone.now()
+        # Certificate is now issued via the final quiz flow, not here.
 
     enrollment.save(update_fields=['progress', 'status', 'completed_at', 'updated_at'])
+

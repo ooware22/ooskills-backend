@@ -11,6 +11,7 @@ from rest_framework import serializers
 
 from formation.models import (
     Category, Certificate, Course, Enrollment,
+    FinalQuiz, FinalQuizAttempt,
     Lesson, LessonNote, LessonProgress, Order, OrderItem,
     QuizAttempt, Quiz, QuizQuestion, Section, ShareToken,
 )
@@ -194,7 +195,7 @@ class CourseWriteSerializer(serializers.ModelSerializer):
 class EnrollmentSerializer(serializers.ModelSerializer):
     course_title = serializers.CharField(source='course.title', read_only=True)
     course_slug = serializers.CharField(source='course.slug', read_only=True)
-    course_image = serializers.URLField(source='course.image', read_only=True)
+    course_image = serializers.SerializerMethodField()
 
     class Meta:
         model = Enrollment
@@ -204,6 +205,11 @@ class EnrollmentSerializer(serializers.ModelSerializer):
             'course_title', 'course_slug', 'course_image',
         ]
         read_only_fields = ['id', 'user', 'progress', 'status', 'enrolled_at', 'completed_at']
+
+    def get_course_image(self, obj):
+        if obj.course.image:
+            return obj.course.image.url
+        return None
 
 
 class EnrollmentCreateSerializer(serializers.Serializer):
@@ -277,6 +283,86 @@ class QuizSubmitSerializer(serializers.Serializer):
     )
 
 
+# ─── Final Quiz ──────────────────────────────────────────────────────────────
+
+class FinalQuizSerializer(serializers.ModelSerializer):
+    """Read-only config for the course final quiz."""
+    remaining_attempts = serializers.SerializerMethodField()
+    has_passed = serializers.SerializerMethodField()
+
+    class Meta:
+        model = FinalQuiz
+        fields = [
+            'id', 'course', 'title', 'num_questions',
+            'pass_threshold', 'max_attempts', 'xp_reward',
+            'remaining_attempts', 'has_passed',
+        ]
+
+    def get_remaining_attempts(self, obj):
+        request = self.context.get('request')
+        if not request or not request.user.is_authenticated:
+            return None
+        from formation.services.final_quiz_service import get_final_quiz_remaining_attempts
+        try:
+            enrollment = Enrollment.objects.get(
+                user=request.user, course=obj.course,
+            )
+            return get_final_quiz_remaining_attempts(enrollment, obj)
+        except Enrollment.DoesNotExist:
+            return None
+
+    def get_has_passed(self, obj):
+        request = self.context.get('request')
+        if not request or not request.user.is_authenticated:
+            return False
+        return FinalQuizAttempt.objects.filter(
+            enrollment__user=request.user,
+            final_quiz=obj,
+            passed=True,
+        ).exists()
+
+
+class FinalQuizGenerateSerializer(serializers.Serializer):
+    """Input for generating final quiz questions."""
+    course_id = serializers.UUIDField()
+
+
+class FinalQuizSubmitSerializer(serializers.Serializer):
+    """Input for submitting final quiz answers."""
+    course_id = serializers.UUIDField()
+    question_ids = serializers.ListField(
+        child=serializers.UUIDField(),
+        help_text='List of question IDs that were presented',
+    )
+    answers = serializers.DictField(
+        child=serializers.IntegerField(),
+        help_text='Map of question_id -> selected_option_index',
+    )
+
+
+class FinalQuizAttemptSerializer(serializers.ModelSerializer):
+    """Output for final quiz attempt results."""
+    remaining_attempts = serializers.SerializerMethodField()
+
+    class Meta:
+        model = FinalQuizAttempt
+        fields = [
+            'id', 'enrollment', 'final_quiz',
+            'score', 'answers', 'questions_snapshot',
+            'passed', 'xp_earned', 'feedback',
+            'attempt_number', 'submitted_at',
+            'remaining_attempts',
+        ]
+        read_only_fields = [
+            'id', 'enrollment', 'score', 'passed',
+            'xp_earned', 'feedback', 'attempt_number', 'submitted_at',
+        ]
+
+    def get_remaining_attempts(self, obj):
+        from formation.services.final_quiz_service import get_final_quiz_remaining_attempts
+        return get_final_quiz_remaining_attempts(obj.enrollment, obj.final_quiz)
+
+
 # ─── Order ───────────────────────────────────────────────────────────────────
 
 class OrderItemSerializer(serializers.ModelSerializer):
@@ -316,10 +402,10 @@ class CertificateSerializer(serializers.ModelSerializer):
     class Meta:
         model = Certificate
         fields = [
-            'id', 'user', 'course', 'score', 'code', 'issuedAt',
+            'id', 'user', 'course', 'score', 'code', 'pdf_url', 'issuedAt',
             'course_title', 'user_name',
         ]
-        read_only_fields = ['id', 'user', 'course', 'score', 'code', 'issuedAt']
+        read_only_fields = ['id', 'user', 'course', 'score', 'code', 'pdf_url', 'issuedAt']
 
 
 # ─── Share Token ─────────────────────────────────────────────────────────────

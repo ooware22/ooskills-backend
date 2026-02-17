@@ -287,3 +287,199 @@ class CertificateTests(FormationTestBase):
         issue_certificate(self.enrollment)
         with self.assertRaises(CertificateAlreadyIssued):
             issue_certificate(self.enrollment)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 6. FINAL QUIZ TESTS
+# ═════════════════════════════════════════════════════════════════════════════
+
+class FinalQuizTests(FormationTestBase):
+    """Tests for the final quiz generation and submission flow."""
+
+    def setUp(self):
+        super().setUp()
+        from formation.models import FinalQuiz
+
+        # Create a section quiz with 3 questions for the test course
+        self.quiz = Quiz.objects.create(
+            section=self.section,
+            title='Module 1 Quiz',
+            pass_threshold=70,
+            max_attempts=3,
+        )
+        self.q1 = QuizQuestion.objects.create(
+            quiz=self.quiz, question='What is 1+1?',
+            options=['1', '2', '3', '4'],
+            correct_answer=1, sequence=1,
+        )
+        self.q2 = QuizQuestion.objects.create(
+            quiz=self.quiz, question='What is 2+2?',
+            options=['2', '3', '4', '5'],
+            correct_answer=2, sequence=2,
+        )
+        self.q3 = QuizQuestion.objects.create(
+            quiz=self.quiz, question='What is 3+3?',
+            options=['4', '5', '6', '7'],
+            correct_answer=2, sequence=3,
+        )
+
+        self.final_quiz = FinalQuiz.objects.create(
+            course=self.course,
+            title='Examen Final',
+            num_questions=2,  # only 2 for testing
+            pass_threshold=70,
+            max_attempts=3,
+            xp_reward=50,
+        )
+        # Complete the enrollment so the student can take the final quiz
+        self.enrollment.status = EnrollmentStatus.COMPLETED
+        self.enrollment.save()
+
+    def test_generate_questions(self):
+        """Should return random questions from section quizzes."""
+        from formation.services.final_quiz_service import generate_final_quiz_questions
+
+        questions = generate_final_quiz_questions(self.enrollment)
+        self.assertEqual(len(questions), 2)
+        # Each question dict should have these keys
+        for q in questions:
+            self.assertIn('id', q)
+            self.assertIn('question', q)
+            self.assertIn('options', q)
+
+    def test_generate_rejects_incomplete_enrollment(self):
+        """Cannot generate quiz if enrollment is not completed."""
+        from formation.services.final_quiz_service import (
+            generate_final_quiz_questions, CourseNotCompleted,
+        )
+        self.enrollment.status = EnrollmentStatus.ACTIVE
+        self.enrollment.save()
+        with self.assertRaises(CourseNotCompleted):
+            generate_final_quiz_questions(self.enrollment)
+
+    def test_submit_passing_score(self):
+        """Passing score should create cert and return passed=True."""
+        from formation.services.final_quiz_service import (
+            generate_final_quiz_questions, submit_final_quiz,
+        )
+        from formation.models import Certificate
+
+        questions = generate_final_quiz_questions(self.enrollment)
+        question_ids = [q['id'] for q in questions]
+
+        # Build answers that get a perfect score
+        from formation.models import QuizQuestion
+        answers = {}
+        for qid in question_ids:
+            qq = QuizQuestion.objects.get(id=qid)
+            answers[qid] = qq.correct_answer
+
+        attempt = submit_final_quiz(self.enrollment, answers, question_ids)
+        self.assertTrue(attempt.passed)
+        self.assertEqual(attempt.score, 100)
+        self.assertEqual(attempt.xp_earned, 50)
+
+        # Certificate should have been auto-issued
+        self.assertTrue(
+            Certificate.objects.filter(
+                user=self.user, course=self.course,
+            ).exists()
+        )
+
+    def test_submit_failing_score(self):
+        """Failing score should not issue certificate."""
+        from formation.services.final_quiz_service import (
+            generate_final_quiz_questions, submit_final_quiz,
+        )
+        from formation.models import Certificate
+
+        questions = generate_final_quiz_questions(self.enrollment)
+        question_ids = [q['id'] for q in questions]
+
+        # All wrong answers
+        answers = {qid: 999 for qid in question_ids}
+
+        attempt = submit_final_quiz(self.enrollment, answers, question_ids)
+        self.assertFalse(attempt.passed)
+        self.assertEqual(attempt.score, 0)
+        self.assertEqual(attempt.xp_earned, 0)
+        self.assertFalse(
+            Certificate.objects.filter(
+                user=self.user, course=self.course,
+            ).exists()
+        )
+
+    def test_max_attempts_enforced(self):
+        """Should raise FinalQuizLimitExceeded after max attempts."""
+        from formation.services.final_quiz_service import (
+            generate_final_quiz_questions, submit_final_quiz,
+            FinalQuizLimitExceeded,
+        )
+
+        self.final_quiz.max_attempts = 1
+        self.final_quiz.save()
+
+        questions = generate_final_quiz_questions(self.enrollment)
+        question_ids = [q['id'] for q in questions]
+        answers = {qid: 999 for qid in question_ids}
+        submit_final_quiz(self.enrollment, answers, question_ids)
+
+        # Second attempt should fail
+        with self.assertRaises(FinalQuizLimitExceeded):
+            generate_final_quiz_questions(self.enrollment)
+
+    def test_remaining_attempts(self):
+        """get_final_quiz_remaining_attempts returns correct count."""
+        from formation.services.final_quiz_service import (
+            generate_final_quiz_questions, submit_final_quiz,
+            get_final_quiz_remaining_attempts,
+        )
+
+        remaining = get_final_quiz_remaining_attempts(self.enrollment, self.final_quiz)
+        self.assertEqual(remaining, 3)
+
+        questions = generate_final_quiz_questions(self.enrollment)
+        question_ids = [q['id'] for q in questions]
+        answers = {qid: 999 for qid in question_ids}
+        submit_final_quiz(self.enrollment, answers, question_ids)
+
+        remaining = get_final_quiz_remaining_attempts(self.enrollment, self.final_quiz)
+        self.assertEqual(remaining, 2)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 7. CERTIFICATE PDF TESTS
+# ═════════════════════════════════════════════════════════════════════════════
+
+class CertificatePDFTests(TestCase):
+    """Tests for PDF certificate generation."""
+
+    def test_generate_pdf_bytes(self):
+        """PDF generation should return valid bytes."""
+        from formation.services.pdf_service import generate_certificate_pdf
+        from datetime import datetime
+
+        pdf_bytes = generate_certificate_pdf(
+            student_name='Test Student',
+            course_title='Introduction to Django',
+            score=92.5,
+            code='OOS-TEST123456',
+            issued_at=datetime(2026, 2, 17),
+        )
+        self.assertIsInstance(pdf_bytes, bytes)
+        self.assertTrue(len(pdf_bytes) > 0)
+        # PDF files start with %PDF
+        self.assertTrue(pdf_bytes[:4] == b'%PDF')
+
+    def test_pdf_with_long_title(self):
+        """PDF should handle long course titles gracefully."""
+        from formation.services.pdf_service import generate_certificate_pdf
+
+        pdf_bytes = generate_certificate_pdf(
+            student_name='A Very Long Student Name That Is Quite Unusual',
+            course_title='A Very Long Course Title That Should Be Auto-Sized To Fit',
+            score=100,
+            code='OOS-LONGTEST000',
+        )
+        self.assertIsInstance(pdf_bytes, bytes)
+        self.assertTrue(pdf_bytes[:4] == b'%PDF')

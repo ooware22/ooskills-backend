@@ -12,13 +12,16 @@ from drf_spectacular.utils import extend_schema, extend_schema_view
 
 from formation.models import (
     Category, Certificate, Course, CourseStatus, Enrollment,
-    Lesson, LessonNote, LessonProgress, Order, OrderItem,
+    FinalQuiz, FinalQuizAttempt,
+    Lesson, LessonNote, LessonProgress, Order, OrderItem, OrderStatus,
     QuizAttempt, Quiz, QuizQuestion, Section, ShareToken,
 )
 from formation.serializers import (
     CategorySerializer, CertificateSerializer,
     CourseDetailSerializer, CourseListSerializer, CourseWriteSerializer,
     EnrollmentCreateSerializer, EnrollmentSerializer,
+    FinalQuizSerializer, FinalQuizGenerateSerializer,
+    FinalQuizSubmitSerializer, FinalQuizAttemptSerializer,
     LessonNoteSerializer, LessonProgressSerializer, LessonSerializer,
     OrderCreateSerializer, OrderSerializer,
     ProgressAutosaveSerializer,
@@ -34,6 +37,10 @@ from formation.services.quiz_service import submit_quiz, QuizLimitExceeded
 from formation.services.enrollment_service import enroll_user, AlreadyEnrolled
 from formation.services.sharing_service import (
     create_share_token, validate_and_consume_token,
+)
+from formation.services.final_quiz_service import (
+    generate_final_quiz_questions, submit_final_quiz,
+    FinalQuizNotConfigured, FinalQuizLimitExceeded, CourseNotCompleted as FQCourseNotCompleted,
 )
 
 
@@ -424,13 +431,167 @@ class OrderViewSet(
                 order=order, course=course, price=course.price,
             )
 
+        # Free order → mark paid immediately
+        if total == 0:
+            order.status = OrderStatus.PAID
+            order.save(update_fields=['status'])
+
+        # Auto-enroll the user in each course (skip if already enrolled)
+        for course in courses:
+            try:
+                enroll_user(request.user, course)
+            except AlreadyEnrolled:
+                pass
+
         return Response(
             OrderSerializer(order).data,
             status=status.HTTP_201_CREATED,
         )
 
 
-# ─── Certificate ─────────────────────────────────────────────────────────────
+# ─── Final Quiz ─────────────────────────────────────────────────────────────────────
+
+@extend_schema_view(
+    list=extend_schema(summary='List final quiz config for a course'),
+)
+class FinalQuizViewSet(viewsets.GenericViewSet):
+    """Final quiz endpoints for certificate generation."""
+    permission_classes = [IsAuthenticated]
+
+    def get_serializer_class(self):
+        if self.action == 'generate':
+            return FinalQuizGenerateSerializer
+        if self.action == 'submit':
+            return FinalQuizSubmitSerializer
+        return FinalQuizSerializer
+
+    @action(detail=False, methods=['get'], url_path='config')
+    def config(self, request):
+        """Get final quiz config for a course.
+
+        GET /api/formation/final-quiz/config/?course=<slug>
+        """
+        course_slug = request.query_params.get('course')
+        if not course_slug:
+            return Response(
+                {'detail': 'course query parameter is required.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            final_quiz = FinalQuiz.objects.select_related('course').get(
+                course__slug=course_slug,
+            )
+        except FinalQuiz.DoesNotExist:
+            return Response(
+                {'detail': 'No final quiz configured for this course.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        serializer = FinalQuizSerializer(final_quiz, context={'request': request})
+        return Response(serializer.data)
+
+    @action(detail=False, methods=['post'], url_path='generate')
+    def generate(self, request):
+        """Generate random questions for a final quiz attempt.
+
+        POST /api/formation/final-quiz/generate/
+        Body: { course_id }
+        """
+        ser = FinalQuizGenerateSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+
+        try:
+            enrollment = Enrollment.objects.get(
+                user=request.user, course_id=ser.validated_data['course_id'],
+            )
+        except Enrollment.DoesNotExist:
+            return Response(
+                {'detail': 'Not enrolled in this course.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        try:
+            questions = generate_final_quiz_questions(enrollment)
+        except FQCourseNotCompleted as e:
+            return Response(
+                {'detail': str(e)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except FinalQuizNotConfigured as e:
+            return Response(
+                {'detail': str(e)},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        except FinalQuizLimitExceeded as e:
+            return Response(
+                {'detail': str(e)},
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+
+        return Response({'questions': questions})
+
+    @action(detail=False, methods=['post'], url_path='submit')
+    def submit(self, request):
+        """Submit final quiz answers.
+
+        POST /api/formation/final-quiz/submit/
+        Body: { course_id, question_ids, answers }
+
+        Returns the attempt result, including whether a certificate was issued.
+        """
+        ser = FinalQuizSubmitSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+
+        try:
+            enrollment = Enrollment.objects.get(
+                user=request.user, course_id=ser.validated_data['course_id'],
+            )
+        except Enrollment.DoesNotExist:
+            return Response(
+                {'detail': 'Not enrolled in this course.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        try:
+            question_ids = [str(qid) for qid in ser.validated_data['question_ids']]
+            attempt = submit_final_quiz(
+                enrollment=enrollment,
+                answers=ser.validated_data['answers'],
+                question_ids=question_ids,
+            )
+        except FinalQuizNotConfigured as e:
+            return Response(
+                {'detail': str(e)},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        except FinalQuizLimitExceeded as e:
+            return Response(
+                {'detail': str(e)},
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+        except ValueError as e:
+            return Response(
+                {'detail': str(e)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        result = FinalQuizAttemptSerializer(attempt).data
+
+        # If passed, include certificate info
+        if attempt.passed:
+            try:
+                cert = Certificate.objects.get(
+                    user=request.user, course=enrollment.course,
+                )
+                result['certificate'] = CertificateSerializer(cert).data
+            except Certificate.DoesNotExist:
+                pass
+
+        return Response(result, status=status.HTTP_201_CREATED)
+
+
+# ─── Certificate ─────────────────────────────────────────────────────────────────
 
 @extend_schema_view(
     list=extend_schema(summary='List my certificates'),
@@ -457,6 +618,18 @@ class CertificateViewSet(viewsets.ReadOnlyModelViewSet):
                 status=status.HTTP_404_NOT_FOUND,
             )
         return Response(CertificateSerializer(cert).data)
+
+    @action(detail=True, methods=['get'], url_path='download')
+    def download(self, request, pk=None):
+        """Download the certificate PDF."""
+        cert = self.get_object()
+        if not cert.pdf_url:
+            return Response(
+                {'detail': 'PDF not available for this certificate.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        from django.shortcuts import redirect
+        return redirect(cert.pdf_url)
 
     def get_permissions(self):
         if self.action == 'verify':
