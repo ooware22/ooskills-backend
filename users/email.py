@@ -1,19 +1,22 @@
 """
 Email Utilities for OOSkills Platform
 
-Provides functions for sending verification and notification emails.
+Provides functions for sending verification and notification emails via Resend.
 """
 
 import secrets
 import logging
 from datetime import timedelta
 from django.conf import settings
-from django.core.mail import send_mail
-from django.template.loader import render_to_string
-from django.utils.html import strip_tags
 from django.utils import timezone
+import resend
 
 logger = logging.getLogger(__name__)
+
+
+def _init_resend():
+    """Initialise Resend API key from Django settings."""
+    resend.api_key = settings.RESEND_API_KEY
 
 
 def generate_verification_token(user):
@@ -57,7 +60,7 @@ def get_verification_url(token):
 
 def send_verification_email(user):
     """
-    Send verification email to user.
+    Send verification email to user via Resend.
     
     Args:
         user: User instance
@@ -66,6 +69,8 @@ def send_verification_email(user):
         True if sent successfully, False otherwise
     """
     try:
+        _init_resend()
+
         # Generate token
         verification_token = generate_verification_token(user)
         verification_url = get_verification_url(verification_token.token)
@@ -128,18 +133,16 @@ Si vous n'avez pas créé de compte sur OOSkills, ignorez simplement cet email.
 © 2024 OOSkills. Tous droits réservés.
         """
         
-        # Send email
-        logger.info(f"[EMAIL] Sending verification email to {user.email} via {settings.EMAIL_BACKEND}")
-        logger.info(f"[EMAIL] SMTP Host: {settings.EMAIL_HOST}:{settings.EMAIL_PORT}, TLS: {settings.EMAIL_USE_TLS}, From: {settings.DEFAULT_FROM_EMAIL}")
-        send_mail(
-            subject=subject,
-            message=plain_message,
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=[user.email],
-            html_message=html_message,
-            fail_silently=False,
-        )
-        logger.info(f"[EMAIL] Verification email sent successfully to {user.email}")
+        # Send email via Resend
+        logger.info(f"[EMAIL] Sending verification email to {user.email} via Resend")
+        r = resend.Emails.send({
+            "from": settings.DEFAULT_FROM_EMAIL,
+            "to": [user.email],
+            "subject": subject,
+            "html": html_message,
+            "text": plain_message,
+        })
+        logger.info(f"[EMAIL] Verification email sent successfully to {user.email} (id: {r.get('id', 'N/A')})")
         
         return True
     except Exception as e:
@@ -149,12 +152,14 @@ Si vous n'avez pas créé de compte sur OOSkills, ignorez simplement cet email.
 
 def send_welcome_email(user):
     """
-    Send welcome email after verification.
+    Send welcome email after verification via Resend.
     
     Args:
         user: User instance
     """
     try:
+        _init_resend()
+
         subject = "Bienvenue sur OOSkills!"
         
         html_message = f"""
@@ -204,14 +209,13 @@ Visitez: {settings.FRONTEND_URL}
 © 2024 OOSkills. Tous droits réservés.
         """
         
-        send_mail(
-            subject=subject,
-            message=plain_message,
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=[user.email],
-            html_message=html_message,
-            fail_silently=True,
-        )
+        resend.Emails.send({
+            "from": settings.DEFAULT_FROM_EMAIL,
+            "to": [user.email],
+            "subject": subject,
+            "html": html_message,
+            "text": plain_message,
+        })
         
         return True
     except Exception:
@@ -298,7 +302,7 @@ def get_password_reset_url(token):
 
 def send_password_reset_email(user):
     """
-    Send password reset email to user.
+    Send password reset email to user via Resend.
     
     Args:
         user: User instance
@@ -307,6 +311,8 @@ def send_password_reset_email(user):
         True if sent successfully, False otherwise
     """
     try:
+        _init_resend()
+
         # Generate token
         reset_token = generate_password_reset_token(user)
         reset_url = get_password_reset_url(reset_token.token)
@@ -371,18 +377,16 @@ Si vous n'avez pas demandé la réinitialisation de votre mot de passe, ignorez 
 © 2024 OOSkills. Tous droits réservés.
         """
         
-        # Send email
-        logger.info(f"[EMAIL] Sending password reset email to {user.email} via {settings.EMAIL_BACKEND}")
-        logger.info(f"[EMAIL] SMTP Host: {settings.EMAIL_HOST}:{settings.EMAIL_PORT}, TLS: {settings.EMAIL_USE_TLS}, From: {settings.DEFAULT_FROM_EMAIL}")
-        send_mail(
-            subject=subject,
-            message=plain_message,
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=[user.email],
-            html_message=html_message,
-            fail_silently=False,
-        )
-        logger.info(f"[EMAIL] Password reset email sent successfully to {user.email}")
+        # Send email via Resend
+        logger.info(f"[EMAIL] Sending password reset email to {user.email} via Resend")
+        r = resend.Emails.send({
+            "from": settings.DEFAULT_FROM_EMAIL,
+            "to": [user.email],
+            "subject": subject,
+            "html": html_message,
+            "text": plain_message,
+        })
+        logger.info(f"[EMAIL] Password reset email sent successfully to {user.email} (id: {r.get('id', 'N/A')})")
         
         return True
     except Exception as e:
