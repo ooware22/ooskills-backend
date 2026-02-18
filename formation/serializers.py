@@ -10,7 +10,7 @@ The frontend picks the right language based on user preference.
 from rest_framework import serializers
 
 from formation.models import (
-    Category, Certificate, Course, Enrollment,
+    Category, Certificate, Course, CourseRating, Enrollment,
     FinalQuiz, FinalQuizAttempt,
     Lesson, LessonNote, LessonProgress, Order, OrderItem,
     QuizAttempt, Quiz, QuizQuestion, Section, ShareToken,
@@ -437,3 +437,28 @@ class ShareTokenCreateSerializer(serializers.Serializer):
     expires_in_days = serializers.IntegerField(
         min_value=0, required=False, allow_null=True,
     )
+
+
+# ─── Course Rating ────────────────────────────────────────────────────────────
+
+class CourseRatingSerializer(serializers.ModelSerializer):
+    """Read-only serializer for displaying ratings."""
+    user_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CourseRating
+        fields = ['id', 'user', 'course', 'rating', 'review_text', 'user_name', 'created_at']
+        read_only_fields = fields
+
+    def get_user_name(self, obj):
+        u = obj.user
+        if u.first_name and u.last_name:
+            return f'{u.first_name} {u.last_name}'
+        return u.email.split('@')[0]
+
+
+class CourseRatingCreateSerializer(serializers.Serializer):
+    """Input serializer for submitting / updating a rating."""
+    rating = serializers.IntegerField(min_value=1, max_value=5)
+    review_text = serializers.CharField(required=False, allow_blank=True, default='')
+

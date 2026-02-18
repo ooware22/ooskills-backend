@@ -11,7 +11,7 @@ from rest_framework.filters import OrderingFilter
 from drf_spectacular.utils import extend_schema, extend_schema_view
 
 from formation.models import (
-    Category, Certificate, Course, CourseStatus, Enrollment,
+    Category, Certificate, Course, CourseRating, CourseStatus, Enrollment,
     FinalQuiz, FinalQuizAttempt,
     Lesson, LessonNote, LessonProgress, Order, OrderItem, OrderStatus,
     QuizAttempt, Quiz, QuizQuestion, Section, ShareToken,
@@ -19,6 +19,7 @@ from formation.models import (
 from formation.serializers import (
     CategorySerializer, CertificateSerializer,
     CourseDetailSerializer, CourseListSerializer, CourseWriteSerializer,
+    CourseRatingSerializer, CourseRatingCreateSerializer,
     EnrollmentCreateSerializer, EnrollmentSerializer,
     FinalQuizSerializer, FinalQuizGenerateSerializer,
     FinalQuizSubmitSerializer, FinalQuizAttemptSerializer,
@@ -86,6 +87,51 @@ class CourseViewSet(viewsets.ModelViewSet):
         if self.action in ('create', 'update', 'partial_update'):
             return CourseWriteSerializer
         return CourseListSerializer
+
+    @extend_schema(
+        summary='Rate a course (enrolled users only)',
+        request=CourseRatingCreateSerializer,
+        responses=CourseRatingSerializer,
+    )
+    @action(detail=True, methods=['post'], url_path='rate',
+            permission_classes=[IsAuthenticated])
+    def rate(self, request, slug=None):
+        """Submit or update a course rating. User must be enrolled."""
+        course = self.get_object()
+        user = request.user
+
+        # Check enrollment
+        if not Enrollment.objects.filter(user=user, course=course).exists():
+            return Response(
+                {'detail': 'You must be enrolled in this course to rate it.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        ser = CourseRatingCreateSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+
+        rating_obj, created = CourseRating.objects.update_or_create(
+            user=user,
+            course=course,
+            defaults={
+                'rating': ser.validated_data['rating'],
+                'review_text': ser.validated_data.get('review_text', ''),
+            },
+        )
+
+        return Response(
+            CourseRatingSerializer(rating_obj).data,
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
+
+    @extend_schema(summary='Get ratings for a course')
+    @action(detail=True, methods=['get'], url_path='ratings',
+            permission_classes=[AllowAny])
+    def ratings(self, request, slug=None):
+        """List all ratings for a course."""
+        course = self.get_object()
+        ratings = CourseRating.objects.filter(course=course).select_related('user')
+        return Response(CourseRatingSerializer(ratings, many=True).data)
 
 
 @extend_schema_view(
@@ -193,10 +239,7 @@ class EnrollmentViewSet(
     filterset_class = EnrollmentFilter
 
     def get_queryset(self):
-        user = self.request.user
-        if user.is_admin:
-            return Enrollment.objects.all().select_related('course')
-        return Enrollment.objects.filter(user=user).select_related('course')
+        return Enrollment.objects.filter(user=self.request.user).select_related('course')
 
     def get_serializer_class(self):
         if self.action == 'create':
@@ -590,6 +633,18 @@ class FinalQuizViewSet(viewsets.GenericViewSet):
 
         return Response(result, status=status.HTTP_201_CREATED)
 
+    @action(detail=False, methods=['get'], url_path='my-attempts')
+    def my_attempts(self, request):
+        """List final quiz attempts for the current user.
+
+        GET /api/formation/final-quiz/my-attempts/
+        """
+        attempts = FinalQuizAttempt.objects.filter(
+            enrollment__user=request.user,
+        ).select_related('final_quiz', 'enrollment').order_by('-submitted_at')
+        serializer = FinalQuizAttemptSerializer(attempts, many=True)
+        return Response(serializer.data)
+
 
 # ─── Certificate ─────────────────────────────────────────────────────────────────
 
@@ -602,10 +657,7 @@ class CertificateViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = [IsAuthenticated, IsOwnerOrAdmin]
 
     def get_queryset(self):
-        user = self.request.user
-        if user.is_admin:
-            return Certificate.objects.all().select_related('course', 'user')
-        return Certificate.objects.filter(user=user).select_related('course', 'user')
+        return Certificate.objects.filter(user=self.request.user).select_related('course', 'user')
 
     @action(detail=False, methods=['get'], url_path='verify/(?P<code>[^/.]+)')
     def verify(self, request, code=None):

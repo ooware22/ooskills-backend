@@ -768,3 +768,58 @@ class ShareToken(models.Model):
         if self.expires_at and timezone.now() > self.expires_at:
             return False
         return True
+
+
+# =============================================================================
+# COURSE RATING
+# =============================================================================
+
+class CourseRating(models.Model):
+    """Individual star rating (1-5) + optional review text from an enrolled student."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+        related_name='course_ratings',
+    )
+    course = models.ForeignKey(
+        Course, on_delete=models.CASCADE,
+        related_name='course_ratings',
+    )
+    rating = models.PositiveSmallIntegerField(
+        help_text='1-5 star rating',
+    )
+    review_text = models.TextField(blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ['user', 'course']
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'{self.user} → {self.course} ({self.rating}★)'
+
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
+        self.update_course_aggregates()
+
+    def delete(self, *args, **kwargs):
+        course = self.course
+        super().delete(*args, **kwargs)
+        self._update_aggregates_for(course)
+
+    def update_course_aggregates(self):
+        self._update_aggregates_for(self.course)
+
+    @staticmethod
+    def _update_aggregates_for(course):
+        from django.db.models import Avg
+        agg = CourseRating.objects.filter(course=course).aggregate(
+            avg=Avg('rating'),
+            cnt=models.Count('id'),
+        )
+        course.rating = round(agg['avg'] or 0, 2)
+        course.reviews = agg['cnt']
+        course.save(update_fields=['rating', 'reviews'])
+

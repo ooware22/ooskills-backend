@@ -3,6 +3,7 @@ Enrollment Service — handles enrolment logic and validation.
 """
 
 from django.db import transaction
+from django.db.models import F
 
 from formation.models import Enrollment, EnrollmentStatus, Course
 
@@ -31,4 +32,8 @@ def enroll_user(user, course: Course) -> Enrollment:
             course=course,
             status=EnrollmentStatus.ACTIVE,
         )
+
+        # Increment the student count on the course
+        Course.objects.filter(pk=course.pk).update(students=F('students') + 1)
+
     return enrollment
