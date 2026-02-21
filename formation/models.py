@@ -60,8 +60,8 @@ class Category(models.Model, TranslatableFieldMixin):
 # =============================================================================
 
 class CourseLevel(models.TextChoices):
-    BEGINNER = 'beginner', 'Débutant'
-    INTERMEDIATE = 'intermediate', 'Intermédiaire'
+    INITIALISATION = 'initialisation', 'Initialisation'
+    APPROFONDISSEMENT = 'approfondissement', 'Approfondissement'
     ADVANCED = 'advanced', 'Avancé'
 
 
@@ -102,7 +102,7 @@ class Course(models.Model):
     )
     level = models.CharField(
         max_length=20, choices=CourseLevel.choices,
-        default=CourseLevel.BEGINNER,
+        default=CourseLevel.INITIALISATION,
     )
     duration = models.PositiveIntegerField(
         'Durée (heures)', default=0,
@@ -121,6 +121,10 @@ class Course(models.Model):
     date = models.DateField('Date de publication', null=True, blank=True)
     price = models.PositiveIntegerField('Prix (DZD)', default=0)
     originalPrice = models.PositiveIntegerField('Prix original', default=0)
+    discount = models.PositiveIntegerField(
+        'Réduction (%)', default=0,
+        help_text='Discount percentage (0-100). Price is auto-calculated from originalPrice.',
+    )
     language = models.CharField(max_length=60, default='English')
     certificate = models.BooleanField('Certificat inclus', default=True)
     lastUpdated = models.DateField('Dernière MàJ', null=True, blank=True)
@@ -156,6 +160,9 @@ class Course(models.Model):
     def save(self, *args, **kwargs):
         if not self.slug:
             self.slug = slugify(self.title) or str(self.id)[:8]
+        # Auto-compute price from originalPrice and discount
+        if self.originalPrice and self.discount is not None:
+            self.price = round(self.originalPrice * (1 - self.discount / 100))
         super().save(*args, **kwargs)
 
 

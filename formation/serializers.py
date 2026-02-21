@@ -136,9 +136,9 @@ class CourseListSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'title', 'slug', 'category', 'level', 'duration',
             'rating', 'reviews', 'students', 'image', 'date',
-            'price', 'originalPrice', 'description',
+            'price', 'originalPrice', 'discount', 'description',
             'prerequisites', 'whatYouLearn', 'modules',
-            'language', 'certificate', 'lastUpdated',
+            'language', 'certificate', 'lastUpdated', 'status',
         ]
 
 
@@ -155,9 +155,9 @@ class CourseDetailSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'title', 'slug', 'category', 'level', 'duration',
             'rating', 'reviews', 'students', 'image', 'date',
-            'price', 'originalPrice', 'description',
+            'price', 'originalPrice', 'discount', 'description',
             'prerequisites', 'whatYouLearn', 'modules',
-            'language', 'certificate', 'lastUpdated',
+            'language', 'certificate', 'lastUpdated', 'status',
             'audioBasePath', 'totalModules', 'totalSlides', 'totalQuizQuestions',
         ]
 
@@ -183,7 +183,7 @@ class CourseWriteSerializer(serializers.ModelSerializer):
         fields = [
             'title', 'slug', 'category', 'level', 'duration',
             'rating', 'reviews', 'students', 'image', 'date',
-            'price', 'originalPrice', 'description',
+            'price', 'originalPrice', 'discount', 'description',
             'prerequisites', 'whatYouLearn',
             'language', 'certificate', 'lastUpdated',
             'status', 'audioBasePath',
