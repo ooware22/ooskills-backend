@@ -323,6 +323,7 @@ class QuestionDifficulty(models.TextChoices):
     EASY = 'easy', 'Facile'
     MEDIUM = 'medium', 'Moyen'
     HARD = 'hard', 'Difficile'
+    EXPERT = 'expert', 'Expert'
 
 
 class QuizQuestion(models.Model):
