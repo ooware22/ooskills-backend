@@ -645,6 +645,96 @@ class FinalQuizViewSet(viewsets.GenericViewSet):
         serializer = FinalQuizAttemptSerializer(attempts, many=True)
         return Response(serializer.data)
 
+    # ── Admin CRUD ────────────────────────────────────────────────
+
+    @action(detail=False, methods=['get'], url_path='admin/get')
+    def admin_get(self, request):
+        """
+        Get the final quiz for a course (admin only).
+
+        GET /api/formation/final-quiz/admin/get/?course_id=<uuid>
+        """
+        if not (request.user.is_staff or getattr(request.user, 'role', '') in ('ADMIN', 'SUPER_ADMIN')):
+            return Response({'detail': 'Admin only.'}, status=status.HTTP_403_FORBIDDEN)
+
+        course_id = request.query_params.get('course_id')
+        if not course_id:
+            return Response({'detail': 'course_id query parameter required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            fq = FinalQuiz.objects.get(course_id=course_id)
+        except FinalQuiz.DoesNotExist:
+            return Response({'detail': 'No final quiz configured.'}, status=status.HTTP_404_NOT_FOUND)
+
+        return Response(FinalQuizSerializer(fq, context={'request': request}).data)
+
+    @action(detail=False, methods=['post'], url_path='admin/upsert')
+    def admin_upsert(self, request):
+        """
+        Create or update the final quiz for a course (admin only).
+
+        POST /api/formation/final-quiz/admin/upsert/
+        Body: {
+            course_id: UUID,
+            title: str,                   # optional
+            num_questions: int,           # how many Q's drawn per attempt
+            pass_threshold: int,          # 0–100
+            max_attempts: int,
+            xp_reward: int,
+        }
+        """
+        if not (request.user.is_staff or getattr(request.user, 'role', '') in ('ADMIN', 'SUPER_ADMIN')):
+            return Response({'detail': 'Admin only.'}, status=status.HTTP_403_FORBIDDEN)
+
+        course_id = request.data.get('course_id')
+        if not course_id:
+            return Response({'detail': 'course_id is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        from formation.models import Course as CourseModel
+        try:
+            course = CourseModel.objects.get(id=course_id)
+        except CourseModel.DoesNotExist:
+            return Response({'detail': 'Course not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        defaults = {
+            'title': request.data.get('title', 'Final Quiz'),
+            'num_questions': int(request.data.get('num_questions', 10)),
+            'pass_threshold': int(request.data.get('pass_threshold', 70)),
+            'max_attempts': int(request.data.get('max_attempts', 3)),
+            'xp_reward': int(request.data.get('xp_reward', 50)),
+        }
+
+        fq, created = FinalQuiz.objects.update_or_create(
+            course=course,
+            defaults=defaults,
+        )
+
+        return Response(
+            FinalQuizSerializer(fq, context={'request': request}).data,
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
+
+    @action(detail=False, methods=['delete'], url_path='admin/delete')
+    def admin_delete(self, request):
+        """
+        Delete the final quiz for a course (admin only).
+
+        DELETE /api/formation/final-quiz/admin/delete/?course_id=<uuid>
+        """
+        if not (request.user.is_staff or getattr(request.user, 'role', '') in ('ADMIN', 'SUPER_ADMIN')):
+            return Response({'detail': 'Admin only.'}, status=status.HTTP_403_FORBIDDEN)
+
+        course_id = request.query_params.get('course_id')
+        if not course_id:
+            return Response({'detail': 'course_id query parameter required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        deleted, _ = FinalQuiz.objects.filter(course_id=course_id).delete()
+        if not deleted:
+            return Response({'detail': 'No final quiz found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
 
 # ─── Certificate ─────────────────────────────────────────────────────────────────
 
