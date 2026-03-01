@@ -671,17 +671,61 @@ class CertificateViewSet(viewsets.ReadOnlyModelViewSet):
             )
         return Response(CertificateSerializer(cert).data)
 
-    @action(detail=True, methods=['get'], url_path='download')
-    def download(self, request, pk=None):
-        """Download the certificate PDF."""
-        cert = self.get_object()
-        if not cert.pdf_url:
+    @action(detail=False, methods=['get'], url_path='merged')
+    def merged(self, request):
+        """
+        Return all the authenticated user's certificates shaped for
+        MergedCertificateTemplate.
+
+        GET /api/formation/certificates/merged/
+
+        Response:
+        {
+            "code": "MERGED-<short_user_id>",
+            "student_name": "...",
+            "courses": [
+                {"course_name": "...", "score": 85},
+                ...
+            ],
+            "issued_at": "<ISO datetime of the latest certificate>"
+        }
+
+        Returns 400 if the user has fewer than 2 certificates.
+        """
+        certs = Certificate.objects.filter(
+            user=request.user
+        ).select_related('course', 'user').order_by('-issuedAt')
+
+        if certs.count() < 2:
             return Response(
-                {'detail': 'PDF not available for this certificate.'},
-                status=status.HTTP_404_NOT_FOUND,
+                {'detail': 'At least 2 certificates are required for a merged badge.'},
+                status=status.HTTP_400_BAD_REQUEST,
             )
-        from django.shortcuts import redirect
-        return redirect(cert.pdf_url)
+
+        user = request.user
+        student_name = (
+            getattr(user, 'full_name', '') or
+            f'{user.first_name} {user.last_name}'.strip() or
+            user.email.split('@')[0]
+        )
+
+        courses = [
+            {
+                'course_name': cert.course.title,
+                'score': int(cert.score),
+            }
+            for cert in certs
+        ]
+
+        latest = certs.first()
+        short_id = str(user.id)[:8].upper()
+
+        return Response({
+            'code': f'MERGED-{short_id}',
+            'student_name': student_name,
+            'courses': courses,
+            'issued_at': latest.issuedAt.isoformat(),
+        })
 
     def get_permissions(self):
         if self.action == 'verify':

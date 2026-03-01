@@ -397,15 +397,49 @@ class OrderCreateSerializer(serializers.Serializer):
 
 class CertificateSerializer(serializers.ModelSerializer):
     course_title = serializers.CharField(source='course.title', read_only=True)
-    user_name = serializers.CharField(source='user.full_name', read_only=True)
+    user_name = serializers.SerializerMethodField()
+    duration = serializers.SerializerMethodField()
+    modules = serializers.SerializerMethodField()
+    level = serializers.CharField(source='course.level', read_only=True)
+    issued_at = serializers.DateTimeField(source='issuedAt', read_only=True)
 
     class Meta:
         model = Certificate
         fields = [
-            'id', 'user', 'course', 'score', 'code', 'pdf_url', 'issuedAt',
+            'id', 'user', 'course', 'score', 'code', 'pdf_url',
+            'issuedAt', 'issued_at',
             'course_title', 'user_name',
+            'duration', 'modules', 'level',
         ]
-        read_only_fields = ['id', 'user', 'course', 'score', 'code', 'pdf_url', 'issuedAt']
+        read_only_fields = [
+            'id', 'user', 'course', 'score', 'code', 'pdf_url',
+            'issuedAt', 'issued_at',
+            'course_title', 'user_name',
+            'duration', 'modules', 'level',
+        ]
+
+    def get_user_name(self, obj):
+        u = obj.user
+        full = getattr(u, 'full_name', '') or ''
+        if full.strip():
+            return full.strip()
+        if u.first_name or u.last_name:
+            return f'{u.first_name} {u.last_name}'.strip()
+        return u.email.split('@')[0]
+
+    def get_duration(self, obj):
+        """Return course duration as a human-readable string e.g. '10h'."""
+        hours = obj.course.duration or 0
+        if hours == 0:
+            return None
+        return f'{hours}h'
+
+    def get_modules(self, obj):
+        """Return the number of sections (modules) as a string."""
+        count = obj.course.sections.count()
+        if count == 0:
+            return None
+        return str(count)
 
 
 # ─── Share Token ─────────────────────────────────────────────────────────────
