@@ -18,18 +18,31 @@ from django.contrib import admin
 from django.urls import path, include
 from django.conf import settings
 from django.conf.urls.static import static
+from django.http import JsonResponse
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView, SpectacularRedocView
+
+
+def ping(request):
+    """Lightweight health-check endpoint.
+    Used by the frontend to warm up the server after an idle shutdown.
+    No authentication, no database access — just a fast 200 OK.
+    """
+    return JsonResponse({"status": "ok"})
+
 
 urlpatterns = [
     path('admin/', admin.site.urls),
-    
+
+    # Keep-alive / health-check (no auth required)
+    path('api/ping/', ping, name='ping'),
+
     # API endpoints (users, content, formation)
     path('api/', include([
         path('', include('users.urls')),
         path('', include('content.urls')),
         path('formation/', include('formation.urls')),
     ])),
-    
+
     # API Documentation (Swagger/OpenAPI)
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
     path('api/docs/', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui'),
