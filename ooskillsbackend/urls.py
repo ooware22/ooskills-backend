@@ -41,6 +41,7 @@ urlpatterns = [
         path('', include('users.urls')),
         path('', include('content.urls')),
         path('formation/', include('formation.urls')),
+        path('gamification/', include('gamefication.urls')),
     ])),
 
     # API Documentation (Swagger/OpenAPI)

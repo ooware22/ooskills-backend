@@ -65,6 +65,7 @@ INSTALLED_APPS = [
     'users',
     'content',
     'formation',
+    'gamefication',
 ]
 
 MIDDLEWARE = [

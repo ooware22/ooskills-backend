@@ -1,0 +1,192 @@
+# Gamification System — Implementation Plan
+
+## Goal
+
+Add a level/XP gamification system to OOSkills with a **progressive circular ring around the profile picture** showing XP progress and level number — visible in the landing page navbar and student dashboard. Built **frontend-only with mock data**, using **icons only** (no emojis), matching the existing Oxford Blue + Gold design system.
+
+---
+
+## Key Design Decisions
+
+- **Profile Avatar Ring**: SVG circular progress arc around every profile picture occurrence, with a small level number badge. The ring fills proportionally to XP progress toward the next level (gold stroke on dark track).
+- **Mock Data**: All data comes from a `gamificationSlice` with hardcoded mock values. No backend endpoints needed now.
+- **Icons Only**: All achievements and UI elements use Heroicons/Lucide icons, never emojis.
+- **Sound Effects**: Audio feedback on level-up, achievement unlock, and XP gain — using small MP3/WAV files in `public/sounds/`. User can mute via a preference toggle.
+- **Rich Animations**: Confetti particles on level-up, floating "+XP" numbers on XP gain, slide-in toasts for achievements — all via Framer Motion.
+- **Consistent UI**: All new components use the existing color palette (`oxford`, `gold`, `cream`, `silver`), Tailwind dark mode classes, Framer Motion animations, and `rounded-xl` / `rounded-lg` patterns.
+
+---
+
+## Profile Avatar Integration Points
+
+There are **4 locations** where the avatar is rendered and needs the XP ring:
+
+| # | File | Lines | Context |
+|---|---|---|---|
+| 1 | [Header.tsx](file:///c:/DEV/ooskills-frontend/src/components/Header.tsx) | 264–278 | Desktop navbar (logged-in avatar) |
+| 2 | [Header.tsx](file:///c:/DEV/ooskills-frontend/src/components/Header.tsx) | 360–374 | Mobile menu (logged-in avatar) |
+| 3 | [StudentHeader.tsx](file:///c:/DEV/ooskills-frontend/src/components/student/StudentHeader.tsx) | 201–215 | Student dashboard header |
+| 4 | [dashboard page.tsx](file:///c:/DEV/ooskills-frontend/src/app/dashboard/page.tsx) | Stats area | Dashboard overview (new Level card) |
+
+---
+
+## Proposed Changes
+
+### Core Gamification Logic
+
+#### [NEW] [gamificationSlice.ts](file:///c:/DEV/ooskills-frontend/src/store/slices/gamificationSlice.ts)
+- Redux slice with mock gamification state: `xp`, `level`, `levelTitle`, `xpForCurrentLevel`, `xpForNextLevel`, `streak`, `achievements[]`
+- Level thresholds table (10 levels, progressive curve)
+- Computed selectors: `selectLevelProgress` (0–100%), `selectCurrentLevel`, `selectStreak`
+
+---
+
+### Profile Avatar with XP Ring
+
+#### [NEW] [LevelAvatar.tsx](file:///c:/DEV/ooskills-frontend/src/components/student/LevelAvatar.tsx)
+- Reusable component wrapping any avatar (image or initials fallback)
+- SVG circular progress ring around the avatar with gold stroke
+- Small circular badge at bottom-right showing level number
+- Props: `src`, `alt`, `name`, `size` (sm/md/lg), `level`, `progress` (0–1)
+- Renders `rounded-full` avatar inside SVG viewBox with arc path
+
+#### [MODIFY] [Header.tsx](file:///c:/DEV/ooskills-frontend/src/components/Header.tsx)
+- Replace avatar render at lines 264–278 (desktop) and 360–374 (mobile) with `<LevelAvatar>`
+- Import `useAppSelector` to read level/progress from gamification slice
+
+#### [MODIFY] [StudentHeader.tsx](file:///c:/DEV/ooskills-frontend/src/components/student/StudentHeader.tsx)
+- Replace avatar render at lines 201–215 with `<LevelAvatar>`
+
+---
+
+### Dashboard Enhancements
+
+#### [NEW] [XPProgressBar.tsx](file:///c:/DEV/ooskills-frontend/src/components/student/XPProgressBar.tsx)
+- Horizontal animated XP bar: shows current XP / next level XP
+- Level title label with icon (`SparklesIcon`)
+- Gold gradient fill, smooth Framer Motion animation
+
+#### [NEW] [StreakCounter.tsx](file:///c:/DEV/ooskills-frontend/src/components/student/StreakCounter.tsx)
+- `FireIcon` from Heroicons + streak day count
+- Subtle gold glow when streak is active
+
+#### [NEW] [AchievementCard.tsx](file:///c:/DEV/ooskills-frontend/src/components/student/AchievementCard.tsx)
+- Card with icon, title, description
+- Locked state (grayscale, opacity) vs unlocked state (full color)
+- Uses Heroicons icons mapped to each achievement type
+
+#### [NEW] [LevelUpModal.tsx](file:///c:/DEV/ooskills-frontend/src/components/student/LevelUpModal.tsx)
+- Full-screen animated modal shown on level-up (Framer Motion scale + fade + spring)
+- Canvas-based confetti particles (gold + oxford colors, gravity + fade)
+- Shows new level number, title, and motivational message with golden glow
+- Plays level-up sound effect on open
+
+#### [NEW] [XPGainToast.tsx](file:///c:/DEV/ooskills-frontend/src/components/student/XPGainToast.tsx)
+- Floating "+50 XP" notification that appears at bottom-right
+- Slide-up + fade-out animation with Framer Motion `AnimatePresence`
+- Plays subtle XP chime sound
+
+#### [NEW] [AchievementToast.tsx](file:///c:/DEV/ooskills-frontend/src/components/student/AchievementToast.tsx)
+- Slide-in toast for newly unlocked achievements
+- Shows achievement icon + title, auto-dismisses after 4s
+- Achievement unlock sound plays on appear
+
+#### [NEW] [useSoundEffects.ts](file:///c:/DEV/ooskills-frontend/src/hooks/useSoundEffects.ts)
+- Custom hook providing `playLevelUp()`, `playAchievement()`, `playXPGain()` methods
+- Reads mute preference from localStorage
+- Preloads audio files for instant playback
+
+#### [NEW] Sound assets in `public/sounds/`
+- `level-up.mp3` — triumphant fanfare (~1s)
+- `achievement.mp3` — satisfying unlock chime (~0.5s)
+- `xp-gain.mp3` — subtle coin/sparkle sound (~0.3s)
+
+> [!NOTE]
+> Sound files will be small, royalty-free audio. We can generate placeholder beeps initially and replace with polished sounds later.
+
+#### [MODIFY] [dashboard page.tsx](file:///c:/DEV/ooskills-frontend/src/app/dashboard/page.tsx)
+- Add XP/Level section between stats cards and "Continue Learning"
+- Add streak counter in stats area
+- Add "Recent Achievements" row with small achievement cards
+
+---
+
+### Navigation
+
+#### [MODIFY] [StudentSidebar.tsx](file:///c:/DEV/ooskills-frontend/src/components/student/StudentSidebar.tsx)
+- Add nav item: Achievements page (`TrophyIcon` — already imported)
+- Add nav item: Leaderboard page (`ChartBarIcon`)
+
+#### [NEW] [achievements page.tsx](file:///c:/DEV/ooskills-frontend/src/app/dashboard/achievements/page.tsx)
+- Full achievements grid page
+- Filter: All / Unlocked / Locked
+- Uses `AchievementCard` components
+
+#### [NEW] [leaderboard page.tsx](file:///c:/DEV/ooskills-frontend/src/app/dashboard/leaderboard/page.tsx)
+- Mock leaderboard table with avatars (using `LevelAvatar`), names, levels, XP
+- Weekly / All-time toggle
+
+---
+
+### Store Registration & Translations
+
+#### [MODIFY] [store index.ts](file:///c:/DEV/ooskills-frontend/src/store/index.ts)
+- Register `gamification` reducer
+
+#### [MODIFY] [exports.ts](file:///c:/DEV/ooskills-frontend/src/store/exports.ts)
+- Export gamification actions and selectors
+
+#### [MODIFY] messages: [fr.json](file:///c:/DEV/ooskills-frontend/messages/fr.json), [en.json](file:///c:/DEV/ooskills-frontend/messages/en.json), [ar.json](file:///c:/DEV/ooskills-frontend/messages/ar.json)
+- Add `student.gamification.*` keys for level titles, achievement names, streak labels, leaderboard headings
+
+---
+
+## XP & Level System Reference
+
+| Level | Title (EN) | Total XP | XP for Level |
+|---|---|---|---|
+| 1 | Beginner | 0 | — |
+| 2 | Apprentice | 100 | 100 |
+| 3 | Student | 300 | 200 |
+| 4 | Explorer | 600 | 300 |
+| 5 | Scholar | 1,000 | 400 |
+| 6 | Expert | 1,500 | 500 |
+| 7 | Master | 2,200 | 700 |
+| 8 | Champion | 3,000 | 800 |
+| 9 | Legend | 4,000 | 1,000 |
+| 10 | Genius | 5,500 | 1,500 |
+
+---
+
+## Implementation Phases
+
+### Phase 1 — LevelAvatar + Core Slice
+Create `gamificationSlice` with mock data, build `LevelAvatar` component with SVG ring, integrate into all 4 avatar locations.
+
+### Phase 2 — Dashboard Enhancements
+Add `XPProgressBar`, `StreakCounter`, achievement cards to dashboard page.
+
+### Phase 3 — Pages
+Build achievements page, leaderboard page, add sidebar navigation items.
+
+### Phase 4 — Sound Effects & Animations
+Add `LevelUpModal` with confetti + sound, `XPGainToast` with floating numbers, `AchievementToast` with slide-in, `useSoundEffects` hook, sound asset files.
+
+### Phase 5 — Translations & Final Polish
+Add translations for all 3 languages. Final browser testing across all features.
+
+---
+
+## Verification Plan
+
+### Browser Testing
+1. Check `LevelAvatar` renders correctly in Header (desktop + mobile) and StudentHeader
+2. Verify SVG ring fills proportionally and level badge displays
+3. Verify dashboard XP bar, streak counter, and achievements render
+4. Trigger level-up modal — verify confetti animation + sound plays
+5. Trigger XP gain toast — verify floating number animation + sound
+6. Trigger achievement toast — verify slide-in + sound
+7. Test mute toggle — verify sounds are silenced
+8. Test dark mode for all new components
+9. Test RTL (Arabic) layout
+10. Navigate to `/dashboard/achievements` and `/dashboard/leaderboard`
