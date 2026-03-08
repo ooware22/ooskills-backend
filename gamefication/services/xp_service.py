@@ -107,6 +107,10 @@ def _update_streak(user_xp: UserXP):
         user_xp.streak_days = 1
         user_xp.streak_last_date = today
 
+    # Maintain record
+    if user_xp.streak_days > user_xp.longest_streak:
+        user_xp.longest_streak = user_xp.streak_days
+
 
 def get_or_create_xp_profile(user) -> UserXP:
     """Get or create a user's XP profile with defaults."""

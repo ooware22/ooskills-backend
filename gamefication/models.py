@@ -90,6 +90,7 @@ class UserXP(models.Model):
         help_text='i18n level title, e.g. {"fr": "Débutant", "en": "Beginner"}',
     )
     streak_days = models.PositiveIntegerField('Jours consécutifs', default=0)
+    longest_streak = models.PositiveIntegerField('Record de jours', default=0)
     streak_last_date = models.DateField(
         'Dernière activité', null=True, blank=True,
         help_text='Last date the user earned XP',
