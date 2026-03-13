@@ -473,6 +473,13 @@ class FinalQuiz(models.Model):
     xp_reward = models.PositiveIntegerField(
         default=50, help_text='XP points awarded on pass',
     )
+    motivation_audio = models.FileField(
+        'Audio de motivation',
+        upload_to=audio_upload_path,
+        storage=SupabaseAudioStorage(),
+        blank=True,
+        help_text='Audio file played when student fails — uploaded to Supabase',
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

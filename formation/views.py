@@ -653,6 +653,14 @@ class FinalQuizViewSet(viewsets.GenericViewSet):
                 result['certificate'] = CertificateSerializer(cert).data
             except Certificate.DoesNotExist:
                 pass
+        else:
+            # Include motivation audio URL if available
+            try:
+                fq = FinalQuiz.objects.get(course=enrollment.course)
+                if fq.motivation_audio:
+                    result['motivation_audio_url'] = fq.motivation_audio.url
+            except FinalQuiz.DoesNotExist:
+                pass
 
         return Response(result, status=status.HTTP_201_CREATED)
 
@@ -697,13 +705,14 @@ class FinalQuizViewSet(viewsets.GenericViewSet):
         Create or update the final quiz for a course (admin only).
 
         POST /api/formation/final-quiz/admin/upsert/
-        Body: {
+        Body (multipart/form-data or JSON): {
             course_id: UUID,
             title: str,                   # optional
             num_questions: int,           # how many Q's drawn per attempt
             pass_threshold: int,          # 0–100
             max_attempts: int,
             xp_reward: int,
+            motivation_audio: File,       # optional audio file
         }
         """
         if not (request.user.is_staff or getattr(request.user, 'role', '') in ('ADMIN', 'SUPER_ADMIN')):
@@ -731,6 +740,14 @@ class FinalQuizViewSet(viewsets.GenericViewSet):
             course=course,
             defaults=defaults,
         )
+
+        # Handle motivation_audio file upload
+        if 'motivation_audio' in request.FILES:
+            fq.motivation_audio = request.FILES['motivation_audio']
+            fq.save(update_fields=['motivation_audio'])
+        elif request.data.get('clear_motivation_audio') == 'true':
+            fq.motivation_audio = ''
+            fq.save(update_fields=['motivation_audio'])
 
         return Response(
             FinalQuizSerializer(fq, context={'request': request}).data,

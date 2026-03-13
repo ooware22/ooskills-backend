@@ -50,10 +50,20 @@ def issue_certificate(enrollment: Enrollment, score: float = 0) -> Certificate:
 
     code = f'OOS-{secrets.token_hex(6).upper()}'
 
-    return Certificate.objects.create(
+    cert = Certificate.objects.create(
         user=enrollment.user,
         course=enrollment.course,
         score=score,
         code=code,
         pdf_url='',
     )
+
+    # Send certificate email notification (non-blocking)
+    try:
+        from gamefication.services.notification_email import send_certificate_email_async
+        course_title = enrollment.course.title or str(enrollment.course)
+        send_certificate_email_async(enrollment.user, course_title, score, code)
+    except Exception:
+        logger.warning("Failed to send certificate email notification", exc_info=True)
+
+    return cert

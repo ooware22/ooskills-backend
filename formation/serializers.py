@@ -310,6 +310,7 @@ class FinalQuizSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'course', 'title', 'num_questions',
             'pass_threshold', 'max_attempts', 'xp_reward',
+            'motivation_audio',
             'remaining_attempts', 'has_passed',
         ]
 

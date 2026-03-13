@@ -77,6 +77,11 @@ def award_xp(
     # Check achievements (outside the XP transaction to avoid deadlocks)
     achievements_unlocked = check_achievements(user)
 
+    # Send level-up email notification (non-blocking)
+    if leveled_up:
+        from gamefication.services.notification_email import send_level_up_email_async
+        send_level_up_email_async(user, user_xp.level, user_xp.total_xp)
+
     return {
         'new_xp': user_xp.total_xp,
         'new_level': user_xp.level,
