@@ -10,7 +10,7 @@ The frontend picks the right language based on user preference.
 from rest_framework import serializers
 
 from formation.models import (
-    Category, Certificate, Course, CourseRating, Enrollment,
+    Category, Certificate, Course, CourseMaterial, CourseRating, Enrollment,
     FinalQuiz, FinalQuizAttempt,
     Lesson, LessonNote, LessonProgress, Order, OrderItem,
     QuizAttempt, Quiz, QuizQuestion, Section, ShareToken,
@@ -58,7 +58,8 @@ class LessonSerializer(serializers.ModelSerializer):
         model = Lesson
         fields = [
             'id', 'section', 'title', 'type', 'sequence',
-            'duration_seconds', 'audioUrl', 'content', 'slide_type',
+            'duration_seconds', 'audioUrl', 'diapositiveUrl',
+            'content', 'slide_type', 'display_mode',
         ]
 
     def to_internal_value(self, data):
@@ -85,7 +86,19 @@ class LessonListSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Lesson
-        fields = ['id', 'section', 'title', 'type', 'sequence', 'duration_seconds', 'slide_type']
+        fields = ['id', 'section', 'title', 'type', 'sequence', 'duration_seconds', 'slide_type', 'display_mode', 'diapositiveUrl']
+
+
+# ─── Course Material ─────────────────────────────────────────────────────────
+
+class CourseMaterialSerializer(serializers.ModelSerializer):
+    """Downloadable material attached to a course."""
+    download_url = serializers.CharField(read_only=True)
+
+    class Meta:
+        model = CourseMaterial
+        fields = ['id', 'course', 'name', 'type', 'size', 'file', 'url', 'download_url', 'sequence']
+        read_only_fields = ['download_url']
 
 
 # ─── Section ─────────────────────────────────────────────────────────────────
@@ -130,6 +143,7 @@ class CourseListSerializer(serializers.ModelSerializer):
     """
     category = serializers.SlugRelatedField(slug_field='slug', read_only=True)
     modules = SectionSerializer(source='sections', many=True, read_only=True)
+    materials = CourseMaterialSerializer(many=True, read_only=True)
 
     class Meta:
         model = Course
@@ -137,7 +151,7 @@ class CourseListSerializer(serializers.ModelSerializer):
             'id', 'title', 'slug', 'category', 'level', 'duration',
             'rating', 'reviews', 'students', 'image', 'date',
             'price', 'originalPrice', 'discount', 'description',
-            'prerequisites', 'whatYouLearn', 'modules',
+            'prerequisites', 'whatYouLearn', 'modules', 'materials',
             'language', 'certificate', 'lastUpdated', 'status',
         ]
 
@@ -146,6 +160,7 @@ class CourseDetailSerializer(serializers.ModelSerializer):
     """Detailed course with full section/lesson/quiz data for the player."""
     category = serializers.SlugRelatedField(slug_field='slug', read_only=True)
     modules = SectionDetailSerializer(source='sections', many=True, read_only=True)
+    materials = CourseMaterialSerializer(many=True, read_only=True)
     totalModules = serializers.SerializerMethodField()
     totalSlides = serializers.SerializerMethodField()
     totalQuizQuestions = serializers.SerializerMethodField()
@@ -156,7 +171,7 @@ class CourseDetailSerializer(serializers.ModelSerializer):
             'id', 'title', 'slug', 'category', 'level', 'duration',
             'rating', 'reviews', 'students', 'image', 'date',
             'price', 'originalPrice', 'discount', 'description',
-            'prerequisites', 'whatYouLearn', 'modules',
+            'prerequisites', 'whatYouLearn', 'modules', 'materials',
             'language', 'certificate', 'lastUpdated', 'status',
             'audioBasePath', 'totalModules', 'totalSlides', 'totalQuizQuestions',
         ]

@@ -24,6 +24,7 @@ router.register(r'orders', views.OrderViewSet, basename='order')
 router.register(r'certificates', views.CertificateViewSet, basename='certificate')
 router.register(r'share-tokens', views.ShareTokenViewSet, basename='share-token')
 router.register(r'final-quiz', views.FinalQuizViewSet, basename='final-quiz')
+router.register(r'course-materials', views.CourseMaterialViewSet, basename='course-material')
 
 urlpatterns = [
     path('', include(router.urls)),

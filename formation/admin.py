@@ -6,7 +6,7 @@ All translatable fields are JSONFields ({"fr": ..., "en": ..., "ar": ...}).
 
 from django.contrib import admin
 from formation.models import (
-    Category, Certificate, Course, Enrollment,
+    Category, Certificate, Course, CourseMaterial, Enrollment,
     Lesson, LessonNote, LessonProgress, Order, OrderItem,
     QuizAttempt, Quiz, QuizQuestion, Section, ShareToken,
 )
@@ -18,6 +18,13 @@ class SectionInline(admin.TabularInline):
     model = Section
     extra = 0
     fields = ['title', 'type', 'sequence', 'audioFileIndex']
+    ordering = ['sequence']
+
+
+class CourseMaterialInline(admin.TabularInline):
+    model = CourseMaterial
+    extra = 0
+    fields = ['name', 'type', 'size', 'file', 'url', 'sequence']
     ordering = ['sequence']
 
 
@@ -56,7 +63,7 @@ class CourseAdmin(admin.ModelAdmin):
     list_filter = ['status', 'level', 'category']
     search_fields = ['slug']
     raw_id_fields = ['instructor', 'category']
-    inlines = [SectionInline]
+    inlines = [SectionInline, CourseMaterialInline]
     fieldsets = (
         (None, {
             'fields': ('title', 'slug', 'category', 'description', 'image')
@@ -90,6 +97,13 @@ class LessonAdmin(admin.ModelAdmin):
     list_display = ['section', 'type', 'sequence', 'duration_seconds']
     list_filter = ['type']
     raw_id_fields = ['section']
+
+
+@admin.register(CourseMaterial)
+class CourseMaterialAdmin(admin.ModelAdmin):
+    list_display = ['name', 'course', 'type', 'size', 'sequence']
+    list_filter = ['type']
+    raw_id_fields = ['course']
 
 
 @admin.register(Quiz)

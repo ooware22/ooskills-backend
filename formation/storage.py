@@ -218,3 +218,170 @@ def course_image_upload_path(instance, filename):
     ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else 'jpg'
     unique_name = f"{uuid.uuid4().hex}.{ext}"
     return f"courses/{slug}/{unique_name}"
+
+
+# =============================================================================
+# MATERIAL STORAGE
+# =============================================================================
+
+MATERIAL_CONTENT_TYPES = {
+    'pdf': 'application/pdf',
+    'doc': 'application/msword',
+    'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'ppt': 'application/vnd.ms-powerpoint',
+    'pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    'xls': 'application/vnd.ms-excel',
+    'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'mp4': 'video/mp4',
+    'zip': 'application/zip',
+    'txt': 'text/plain',
+    'jpg': 'image/jpeg',
+    'jpeg': 'image/jpeg',
+    'png': 'image/png',
+}
+
+
+class SupabaseMaterialStorage(Storage):
+    """
+    Django Storage backend that stores files in the Supabase 'materials' bucket.
+    Files are grouped by course_id: materials/<course_id>/<uuid>.<ext>
+    """
+
+    bucket_name = 'materials'
+
+    def deconstruct(self):
+        return ('formation.storage.SupabaseMaterialStorage', [], {})
+
+    def _save(self, name, content):
+        file_content = content.read()
+        content_type = _guess_content_type(name, MATERIAL_CONTENT_TYPES)
+
+        thread = threading.Thread(
+            target=_upload_to_supabase,
+            args=(self.bucket_name, name, file_content, content_type),
+            daemon=True,
+        )
+        thread.start()
+
+        return name
+
+    def url(self, name):
+        if not name:
+            return ''
+        if name.startswith('http'):
+            return name
+        supabase = get_supabase_client()
+        return supabase.storage.from_(self.bucket_name).get_public_url(name)
+
+    def exists(self, name):
+        return False
+
+    def delete(self, name):
+        if not name or name.startswith('http'):
+            return
+        thread = threading.Thread(
+            target=_delete_from_supabase,
+            args=(self.bucket_name, name),
+            daemon=True,
+        )
+        thread.start()
+
+    def size(self, name):
+        return 0
+
+    def listdir(self, path):
+        return [], []
+
+
+def material_upload_path(instance, filename):
+    """
+    Generate upload path: <course_id>/<uuid>.<ext>
+
+    Keeps materials grouped by course ID in the Supabase 'materials' bucket.
+    """
+    course_id = str(instance.course_id)
+    ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else 'bin'
+    unique_name = f"{uuid.uuid4().hex}.{ext}"
+    return f"{course_id}/{unique_name}"
+
+
+# =============================================================================
+# DIAPOSITIVE STORAGE
+# =============================================================================
+
+DIAPOSITIVE_CONTENT_TYPES = {
+    'pdf': 'application/pdf',
+    'ppt': 'application/vnd.ms-powerpoint',
+    'pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    'jpg': 'image/jpeg',
+    'jpeg': 'image/jpeg',
+    'png': 'image/png',
+    'gif': 'image/gif',
+    'webp': 'image/webp',
+    'svg': 'image/svg+xml',
+    'mp4': 'video/mp4',
+}
+
+
+class SupabaseDiapositiveStorage(Storage):
+    """
+    Django Storage backend that stores files in the Supabase 'Diapositive' bucket.
+    Files are grouped by course_id: <course_id>/<uuid>.<ext>
+    """
+
+    bucket_name = 'Diapositive'
+
+    def deconstruct(self):
+        return ('formation.storage.SupabaseDiapositiveStorage', [], {})
+
+    def _save(self, name, content):
+        file_content = content.read()
+        content_type = _guess_content_type(name, DIAPOSITIVE_CONTENT_TYPES)
+
+        thread = threading.Thread(
+            target=_upload_to_supabase,
+            args=(self.bucket_name, name, file_content, content_type),
+            daemon=True,
+        )
+        thread.start()
+
+        return name
+
+    def url(self, name):
+        if not name:
+            return ''
+        if name.startswith('http'):
+            return name
+        supabase = get_supabase_client()
+        return supabase.storage.from_(self.bucket_name).get_public_url(name)
+
+    def exists(self, name):
+        return False
+
+    def delete(self, name):
+        if not name or name.startswith('http'):
+            return
+        thread = threading.Thread(
+            target=_delete_from_supabase,
+            args=(self.bucket_name, name),
+            daemon=True,
+        )
+        thread.start()
+
+    def size(self, name):
+        return 0
+
+    def listdir(self, path):
+        return [], []
+
+
+def diapositive_upload_path(instance, filename):
+    """
+    Generate upload path: <course_id>/<uuid>.<ext>
+
+    Keeps diapositive files grouped by course ID in the Supabase 'Diapositive' bucket.
+    """
+    course_id = str(instance.section.course_id)
+    ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else 'pdf'
+    unique_name = f"{uuid.uuid4().hex}.{ext}"
+    return f"{course_id}/{unique_name}"

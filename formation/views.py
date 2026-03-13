@@ -11,7 +11,7 @@ from rest_framework.filters import OrderingFilter
 from drf_spectacular.utils import extend_schema, extend_schema_view
 
 from formation.models import (
-    Category, Certificate, Course, CourseRating, CourseStatus, Enrollment,
+    Category, Certificate, Course, CourseMaterial, CourseRating, CourseStatus, Enrollment,
     FinalQuiz, FinalQuizAttempt,
     Lesson, LessonNote, LessonProgress, Order, OrderItem, OrderStatus,
     QuizAttempt, Quiz, QuizQuestion, Section, ShareToken,
@@ -19,6 +19,7 @@ from formation.models import (
 from formation.serializers import (
     CategorySerializer, CertificateSerializer,
     CourseDetailSerializer, CourseListSerializer, CourseWriteSerializer,
+    CourseMaterialSerializer,
     CourseRatingSerializer, CourseRatingCreateSerializer,
     EnrollmentCreateSerializer, EnrollmentSerializer,
     FinalQuizSerializer, FinalQuizGenerateSerializer,
@@ -133,6 +134,28 @@ class CourseViewSet(viewsets.ModelViewSet):
         ratings = CourseRating.objects.filter(course=course).select_related('user')
         return Response(CourseRatingSerializer(ratings, many=True).data)
 
+
+# ─── Course Material ─────────────────────────────────────────────────────────
+
+@extend_schema_view(
+    list=extend_schema(summary='List course materials'),
+    create=extend_schema(summary='Upload a course material'),
+)
+class CourseMaterialViewSet(viewsets.ModelViewSet):
+    """
+    Course materials CRUD (admin-only for write).
+
+    Filter by course: GET /api/formation/course-materials/?course=<course-id>
+    """
+    serializer_class = CourseMaterialSerializer
+    permission_classes = [IsAdminOrReadOnly]
+
+    def get_queryset(self):
+        qs = CourseMaterial.objects.select_related('course')
+        course_id = self.request.query_params.get('course')
+        if course_id:
+            qs = qs.filter(course_id=course_id)
+        return qs
 
 @extend_schema_view(
     list=extend_schema(summary='List sections (optionally filter by course slug)'),

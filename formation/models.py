@@ -17,6 +17,8 @@ from django.utils.text import slugify
 
 from formation.storage import SupabaseAudioStorage, audio_upload_path
 from formation.storage import SupabaseImageStorage, course_image_upload_path
+from formation.storage import SupabaseMaterialStorage, material_upload_path
+from formation.storage import SupabaseDiapositiveStorage, diapositive_upload_path
 from content.models import (
     TranslatableFieldMixin,
     validate_translation_json,
@@ -167,6 +169,64 @@ class Course(models.Model):
 
 
 # =============================================================================
+# COURSE MATERIAL  (downloadable files attached to a course)
+# =============================================================================
+
+class MaterialType(models.TextChoices):
+    PDF = 'pdf', 'PDF'
+    WORD = 'word', 'Word'
+    SLIDES = 'slides', 'Slides'
+    VIDEO = 'video', 'Vidéo'
+    OTHER = 'other', 'Autre'
+
+
+class CourseMaterial(models.Model):
+    """Downloadable material attached to a course (PDF, slides, etc.)."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    course = models.ForeignKey(
+        Course, on_delete=models.CASCADE, related_name='materials',
+    )
+    name = models.CharField('Nom', max_length=300)
+    type = models.CharField(
+        max_length=20, choices=MaterialType.choices,
+        default=MaterialType.PDF,
+    )
+    size = models.CharField(
+        'Taille', max_length=60, blank=True,
+        help_text='Human-readable size, e.g. "2.5 MB"',
+    )
+    file = models.FileField(
+        'Fichier',
+        upload_to=material_upload_path,
+        storage=SupabaseMaterialStorage(),
+        blank=True,
+        help_text='Uploaded to Supabase materials/<course_id>/',
+    )
+    url = models.URLField(
+        'URL externe', blank=True,
+        help_text='External URL if file is not uploaded',
+    )
+    sequence = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = 'Support de cours'
+        verbose_name_plural = 'Supports de cours'
+        ordering = ['sequence']
+
+    def __str__(self):
+        return f'{self.name} ({self.get_type_display()})'
+
+    @property
+    def download_url(self):
+        """Return file URL or external URL."""
+        if self.file:
+            return self.file.url
+        return self.url
+
+
+# =============================================================================
 # SECTION  (maps to TS CourseModule / frontend "modules" array)
 # =============================================================================
 
@@ -238,6 +298,12 @@ class LessonType(models.TextChoices):
     AUDIO = 'audio', 'Audio'
 
 
+class DisplayMode(models.TextChoices):
+    NARRATION = 'narration', 'Narration uniquement'
+    SLIDE = 'slide', 'Slide uniquement'
+    BOTH = 'both', 'Les deux'
+
+
 class Lesson(models.Model):
     """A single lesson inside a section."""
 
@@ -261,12 +327,25 @@ class Lesson(models.Model):
         blank=True,
         help_text='Audio file — uploaded to Supabase audios/<course_id>/',
     )
+    diapositiveUrl = models.FileField(
+        'Fichier diapositive',
+        upload_to=diapositive_upload_path,
+        storage=SupabaseDiapositiveStorage(),
+        blank=True,
+        help_text='Diapositive file — uploaded to Supabase Diapositive/<course_id>/',
+    )
     content = models.JSONField(
         'Contenu (JSON)', default=dict, blank=True,
         help_text='Lesson content as a JSON object',
     )
     slide_type = models.CharField(max_length=60, blank=True,
                                   help_text='e.g. bullet_points, pillars, …')
+    display_mode = models.CharField(
+        'Mode d\'affichage',
+        max_length=20, choices=DisplayMode.choices,
+        default=DisplayMode.BOTH,
+        help_text='narration, slide, or both',
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
