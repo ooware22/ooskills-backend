@@ -2,7 +2,11 @@
 Gamification Views — DRF ViewSets for XP profile, history, achievements, leaderboard.
 """
 
+from datetime import timedelta
+
+from django.utils import timezone
 from rest_framework import viewsets, mixins, status
+from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
@@ -29,6 +33,7 @@ from gamefication.services.leaderboard_service import refresh_leaderboard
 class UserXPViewSet(viewsets.GenericViewSet, mixins.ListModelMixin):
     """
     GET /api/gamification/profile/
+    POST /api/gamification/profile/toggle-visibility/
 
     Returns the current user's XP profile (level, XP, streak, progress).
     Uses list() to return a single object (no pk needed).
@@ -40,6 +45,19 @@ class UserXPViewSet(viewsets.GenericViewSet, mixins.ListModelMixin):
         user_xp = get_or_create_xp_profile(request.user)
         serializer = self.get_serializer(user_xp)
         return Response(serializer.data)
+
+    @action(detail=False, methods=['post'], url_path='toggle-visibility')
+    def toggle_visibility(self, request):
+        """Toggle the user's leaderboard visibility."""
+        user_xp = get_or_create_xp_profile(request.user)
+        user_xp.visible_on_leaderboard = not user_xp.visible_on_leaderboard
+        user_xp.save(update_fields=['visible_on_leaderboard'])
+        # Full refresh so the user appears/disappears immediately
+        for period in [LeaderboardPeriod.ALLTIME, LeaderboardPeriod.WEEKLY]:
+            refresh_leaderboard(period)
+        return Response({
+            'visible_on_leaderboard': user_xp.visible_on_leaderboard,
+        })
 
 
 # ─── XP Transaction History ─────────────────────────────────────────────────
@@ -96,8 +114,16 @@ class LeaderboardViewSet(viewsets.GenericViewSet, mixins.ListModelMixin):
 
         qs = LeaderboardCache.objects.filter(period=period).select_related('user')
 
-        # Auto-refresh if cache is empty
+        # Auto-refresh if cache is empty or stale (older than 5 minutes)
+        needs_refresh = False
         if not qs.exists():
+            needs_refresh = True
+        else:
+            latest = qs.order_by('-refreshed_at').values_list('refreshed_at', flat=True).first()
+            if latest and (timezone.now() - latest) > timedelta(minutes=5):
+                needs_refresh = True
+
+        if needs_refresh:
             refresh_leaderboard(period)
             qs = LeaderboardCache.objects.filter(period=period).select_related('user')
 

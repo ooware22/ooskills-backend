@@ -29,7 +29,7 @@ class UserXPSerializer(serializers.ModelSerializer):
         fields = [
             'total_xp', 'level', 'level_title',
             'xp_for_current_level', 'xp_for_next_level', 'progress',
-            'streak_days', 'longest_streak',
+            'streak_days', 'longest_streak', 'visible_on_leaderboard',
         ]
 
     def get_xp_for_current_level(self, obj):

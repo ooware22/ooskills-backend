@@ -53,10 +53,10 @@ def refresh_leaderboard(period: str = LeaderboardPeriod.ALLTIME):
 
 
 def _compute_alltime_rankings() -> list[dict]:
-    """Rank all users by total XP descending."""
+    """Rank all users by total XP descending (only visible users)."""
     from django.db.models import F
     return list(
-        UserXP.objects.filter(total_xp__gt=0)
+        UserXP.objects.filter(total_xp__gt=0, visible_on_leaderboard=True)
         .order_by('-total_xp')
         .values('user_id', 'level')
         .annotate(xp=F('total_xp'))
@@ -70,7 +70,11 @@ def _compute_weekly_rankings() -> list[dict]:
 
     weekly_xp = (
         XPTransaction.objects
-        .filter(created_at__gte=week_ago, amount__gt=0)
+        .filter(
+            created_at__gte=week_ago,
+            amount__gt=0,
+            user__xp_profile__visible_on_leaderboard=True,
+        )
         .values('user_id')
         .annotate(xp=Sum('amount'))
         .order_by('-xp')

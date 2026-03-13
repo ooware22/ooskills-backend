@@ -91,6 +91,10 @@ class UserXP(models.Model):
     )
     streak_days = models.PositiveIntegerField('Jours consécutifs', default=0)
     longest_streak = models.PositiveIntegerField('Record de jours', default=0)
+    visible_on_leaderboard = models.BooleanField(
+        'Visible sur le classement', default=True,
+        help_text='Whether this user appears on the public leaderboard',
+    )
     streak_last_date = models.DateField(
         'Dernière activité', null=True, blank=True,
         help_text='Last date the user earned XP',
