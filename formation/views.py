@@ -2,6 +2,7 @@
 Formation Views — DRF ViewSets for all formation endpoints.
 """
 
+from django.db import models as db_models
 from rest_framework import viewsets, status, mixins
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -88,6 +89,19 @@ class CourseViewSet(viewsets.ModelViewSet):
         if self.action in ('create', 'update', 'partial_update'):
             return CourseWriteSerializer
         return CourseListSerializer
+
+    def destroy(self, request, *args, **kwargs):
+        """Delete a course, handling ProtectedError from related OrderItems."""
+        instance = self.get_object()
+        try:
+            self.perform_destroy(instance)
+        except db_models.ProtectedError:
+            return Response(
+                {'detail': 'Cannot delete this course because it has existing orders. '
+                           'Please remove or archive the related orders first.'},
+                status=status.HTTP_409_CONFLICT,
+            )
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
     @extend_schema(
         summary='Rate a course (enrolled users only)',

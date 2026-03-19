@@ -64,7 +64,7 @@ class Category(models.Model, TranslatableFieldMixin):
 class CourseLevel(models.TextChoices):
     INITIALISATION = 'initialisation', 'Initialisation'
     APPROFONDISSEMENT = 'approfondissement', 'Approfondissement'
-    ADVANCED = 'advanced', 'Avancé'
+    ETUDE_DE_CAS = 'etude_de_cas', 'Étude de cas'
 
 
 class CourseStatus(models.TextChoices):
