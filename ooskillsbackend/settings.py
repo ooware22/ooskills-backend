@@ -342,3 +342,22 @@ FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://localhost:3000')
 
 # Token expiration time in hours
 EMAIL_VERIFICATION_TOKEN_EXPIRY_HOURS = 24
+
+
+# =============================================================================
+# CHARGILY PAY CONFIGURATION
+# =============================================================================
+
+CHARGILY_KEY = os.environ.get('CHARGILY_KEY', '')
+CHARGILY_SECRET = os.environ.get('CHARGILY_SECRET', '')
+CHARGILY_URL = os.environ.get('CHARGILY_URL', 'https://pay.chargily.net/test/api/v2/')
+
+# Ngrok URL for local webhook testing (e.g. https://abc123.ngrok-free.app)
+NGROK_URL = os.environ.get('NGROK_URL', '')
+
+if NGROK_URL:
+    from urllib.parse import urlparse
+    _ngrok_host = urlparse(NGROK_URL).hostname
+    if _ngrok_host and _ngrok_host not in ALLOWED_HOSTS:
+        ALLOWED_HOSTS.append(_ngrok_host)
+    CSRF_TRUSTED_ORIGINS = [NGROK_URL]

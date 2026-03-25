@@ -702,6 +702,7 @@ class PaymentMethod(models.TextChoices):
     BARIDIMOB = 'baridimob', 'BaridiMob'
     CARD = 'card', 'Carte bancaire'
     EDAHABIA = 'edahabia', 'Edahabia'
+    CIB = 'cib', 'CIB'
     FREE = 'free', 'Gratuit'
 
 
@@ -724,6 +725,12 @@ class Order(models.Model):
     )
     paymentRef = models.CharField(
         'Référence de paiement', max_length=200, blank=True,
+    )
+    checkout_url = models.URLField(
+        'Chargily Checkout URL', max_length=500, blank=True,
+    )
+    chargily_checkout_id = models.CharField(
+        'Chargily Checkout ID', max_length=200, blank=True, db_index=True,
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

@@ -5,6 +5,7 @@ All endpoints are prefixed with /api/formation/ (set in root urls.py).
 """
 
 from django.urls import path, include
+from django.views.decorators.csrf import csrf_exempt
 from rest_framework.routers import DefaultRouter
 
 from formation import views
@@ -28,5 +29,5 @@ router.register(r'course-materials', views.CourseMaterialViewSet, basename='cour
 
 urlpatterns = [
     path('', include(router.urls)),
+    path('chargily/webhook/', csrf_exempt(views.ChargilyWebhookView.as_view()), name='chargily-webhook'),
 ]
-

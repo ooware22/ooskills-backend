@@ -2,7 +2,12 @@
 Formation Views — DRF ViewSets for all formation endpoints.
 """
 
+import json
+import logging
+
 from django.db import models as db_models
+from django.http import HttpResponse, JsonResponse, HttpRequest
+from django.views import View
 from rest_framework import viewsets, status, mixins
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -45,6 +50,9 @@ from formation.services.final_quiz_service import (
     generate_final_quiz_questions, submit_final_quiz,
     FinalQuizNotConfigured, FinalQuizLimitExceeded, CourseNotCompleted as FQCourseNotCompleted,
 )
+from formation.chargily_service import create_chargily_checkout, client as chargily_client
+
+logger = logging.getLogger(__name__)
 
 
 # ─── Category ────────────────────────────────────────────────────────────────
@@ -511,22 +519,43 @@ class OrderViewSet(
                 order=order, course=course, price=course.price,
             )
 
-        # Free order → mark paid immediately
+        # Free order → mark paid immediately and auto-enroll
         if total == 0:
             order.status = OrderStatus.PAID
             order.save(update_fields=['status'])
+            for course in courses:
+                try:
+                    enroll_user(request.user, course)
+                except AlreadyEnrolled:
+                    pass
+            return Response(
+                OrderSerializer(order).data,
+                status=status.HTTP_201_CREATED,
+            )
 
-        # Auto-enroll the user in each course (skip if already enrolled)
-        for course in courses:
-            try:
-                enroll_user(request.user, course)
-            except AlreadyEnrolled:
-                pass
+        # Paid order → create Chargily checkout and return checkout_url
+        try:
+            payment_method = ser.validated_data['paymentMethod']
+            # Pass the first course slug for the success redirect
+            first_course_slug = courses.first().slug if courses.exists() else ''
+            chargily_id, checkout_url = create_chargily_checkout(
+                order, payment_method=payment_method, course_slug=first_course_slug,
+            )
+            order.chargily_checkout_id = chargily_id
+            order.checkout_url = checkout_url
+            order.save(update_fields=['chargily_checkout_id', 'checkout_url'])
+        except Exception as e:
+            logger.error(f'Chargily checkout creation failed: {e}')
+            order.status = OrderStatus.FAILED
+            order.save(update_fields=['status'])
+            return Response(
+                {'detail': f'Payment initialization failed: {str(e)}'},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
 
-        return Response(
-            OrderSerializer(order).data,
-            status=status.HTTP_201_CREATED,
-        )
+        data = OrderSerializer(order).data
+        data['checkout_url'] = checkout_url
+        return Response(data, status=status.HTTP_201_CREATED)
 
 
 # ─── Final Quiz ─────────────────────────────────────────────────────────────────────
@@ -938,3 +967,76 @@ class ShareTokenViewSet(viewsets.ModelViewSet):
             )
 
         return Response(ShareTokenSerializer(share).data)
+
+
+# ─── Chargily Webhook ────────────────────────────────────────────────────────
+
+class ChargilyWebhookView(View):
+    """
+    Handles Chargily Pay V2 webhooks.
+
+    Chargily POSTs to this endpoint when a checkout status changes.
+    The view validates the HMAC signature, finds the matching order,
+    and updates its status (+ auto-enrolls on payment success).
+    """
+
+    def post(self, request: HttpRequest, *args, **kwargs):
+        signature = request.headers.get('signature')
+        payload = request.body.decode('utf-8')
+
+        if not signature:
+            return HttpResponse(status=400)
+
+        if not chargily_client.validate_signature(signature, payload):
+            logger.warning('Chargily webhook: invalid signature')
+            return HttpResponse(status=403)
+
+        try:
+            event = json.loads(payload)
+        except json.JSONDecodeError:
+            return HttpResponse(status=400)
+
+        checkout_id = event.get('data', {}).get('id')
+        event_type = event.get('type', '')
+
+        if not checkout_id:
+            logger.warning('Chargily webhook: missing checkout id')
+            return HttpResponse(status=400)
+
+        try:
+            order = Order.objects.get(chargily_checkout_id=checkout_id)
+        except Order.DoesNotExist:
+            logger.warning(f'Chargily webhook: no order for checkout {checkout_id}')
+            return HttpResponse(status=404)
+
+        if event_type == 'checkout.paid':
+            order.status = OrderStatus.PAID
+            order.paymentRef = event.get('id', '')
+            order.save(update_fields=['status', 'paymentRef', 'updated_at'])
+
+            # Auto-enroll the user in each course
+            courses = [item.course for item in order.items.select_related('course')]
+            for course in courses:
+                try:
+                    enroll_user(order.user, course)
+                except AlreadyEnrolled:
+                    pass
+
+            logger.info(f'Chargily webhook: order {order.id} marked as PAID')
+
+        elif event_type == 'checkout.failed':
+            order.status = OrderStatus.FAILED
+            order.save(update_fields=['status', 'updated_at'])
+            logger.info(f'Chargily webhook: order {order.id} marked as FAILED')
+
+        elif event_type in ('checkout.canceled', 'checkout.expired'):
+            order.status = OrderStatus.FAILED
+            order.save(update_fields=['status', 'updated_at'])
+            logger.info(f'Chargily webhook: order {order.id} — {event_type}')
+
+        else:
+            logger.warning(f'Chargily webhook: unknown event type {event_type}')
+            return HttpResponse(status=400)
+
+        return JsonResponse({}, status=200)
+
