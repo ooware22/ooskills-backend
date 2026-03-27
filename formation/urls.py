@@ -26,6 +26,8 @@ router.register(r'certificates', views.CertificateViewSet, basename='certificate
 router.register(r'share-tokens', views.ShareTokenViewSet, basename='share-token')
 router.register(r'final-quiz', views.FinalQuizViewSet, basename='final-quiz')
 router.register(r'course-materials', views.CourseMaterialViewSet, basename='course-material')
+router.register(r'promo-codes', views.PromoCodeViewSet, basename='promo-code')
+router.register(r'gifts', views.CourseGiftViewSet, basename='gift')
 
 urlpatterns = [
     path('', include(router.urls)),

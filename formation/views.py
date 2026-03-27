@@ -17,21 +17,25 @@ from rest_framework.filters import OrderingFilter
 from drf_spectacular.utils import extend_schema, extend_schema_view
 
 from formation.models import (
-    Category, Certificate, Course, CourseMaterial, CourseRating, CourseStatus, Enrollment,
-    FinalQuiz, FinalQuizAttempt,
+    Category, Certificate, Course, CourseMaterial, CourseGift, CourseRating,
+    CourseStatus, Enrollment,
+    FinalQuiz, FinalQuizAttempt, FinalQuizAudio, GiftStatus,
     Lesson, LessonNote, LessonProgress, Order, OrderItem, OrderStatus,
+    PaymentMethod, PromoCode, PromoCodeUsage,
     QuizAttempt, Quiz, QuizQuestion, Section, ShareToken,
 )
 from formation.serializers import (
     CategorySerializer, CertificateSerializer,
     CourseDetailSerializer, CourseListSerializer, CourseWriteSerializer,
     CourseMaterialSerializer,
+    CourseGiftSerializer, CourseGiftSendSerializer, CourseGiftClaimSerializer,
     CourseRatingSerializer, CourseRatingCreateSerializer,
     EnrollmentCreateSerializer, EnrollmentSerializer,
     FinalQuizSerializer, FinalQuizGenerateSerializer,
     FinalQuizSubmitSerializer, FinalQuizAttemptSerializer,
     LessonNoteSerializer, LessonProgressSerializer, LessonSerializer,
     OrderCreateSerializer, OrderSerializer,
+    PromoCodeSerializer, PromoCodeValidateSerializer,
     ProgressAutosaveSerializer,
     QuizAttemptSerializer, QuizSerializer, QuizSubmitSerializer,
     QuizQuestionSerializer,
@@ -697,10 +701,23 @@ class FinalQuizViewSet(viewsets.GenericViewSet):
             except Certificate.DoesNotExist:
                 pass
         else:
-            # Include motivation audio URL if available
+            # Include motivation audio URL based on score percentage
             try:
                 fq = FinalQuiz.objects.get(course=enrollment.course)
-                if fq.motivation_audio:
+                score_pct = float(attempt.score)
+
+                # Try percentage-based audio entries first
+                matched_audio = FinalQuizAudio.objects.filter(
+                    final_quiz=fq,
+                    min_percentage__lte=score_pct,
+                    max_percentage__gte=score_pct,
+                ).first()
+
+                if matched_audio and matched_audio.audio:
+                    result['motivation_audio_url'] = matched_audio.audio.url
+                    result['audio_label'] = matched_audio.label
+                elif fq.motivation_audio:
+                    # Fallback to legacy single audio
                     result['motivation_audio_url'] = fq.motivation_audio.url
             except FinalQuiz.DoesNotExist:
                 pass
@@ -784,13 +801,71 @@ class FinalQuizViewSet(viewsets.GenericViewSet):
             defaults=defaults,
         )
 
-        # Handle motivation_audio file upload
+        # Handle motivation_audio file upload (legacy single audio)
         if 'motivation_audio' in request.FILES:
             fq.motivation_audio = request.FILES['motivation_audio']
             fq.save(update_fields=['motivation_audio'])
         elif request.data.get('clear_motivation_audio') == 'true':
             fq.motivation_audio = ''
             fq.save(update_fields=['motivation_audio'])
+
+        # Handle percentage-based audio entries
+        # Collect indexed entries from form-data: audio_entries[0].min_percentage, etc.
+        entries_data = []
+        idx = 0
+        while True:
+            min_key = f'audio_entries[{idx}].min_percentage'
+            max_key = f'audio_entries[{idx}].max_percentage'
+            label_key = f'audio_entries[{idx}].label'
+            audio_key = f'audio_entries[{idx}].audio'
+            existing_id_key = f'audio_entries[{idx}].id'
+
+            if min_key not in request.data and max_key not in request.data:
+                break
+
+            entries_data.append({
+                'id': request.data.get(existing_id_key, ''),
+                'min_percentage': int(request.data.get(min_key, 0)),
+                'max_percentage': int(request.data.get(max_key, 100)),
+                'label': request.data.get(label_key, ''),
+                'audio_file': request.FILES.get(audio_key),
+            })
+            idx += 1
+
+        if idx > 0 or request.data.get('clear_audio_entries') == 'true':
+            # Keep track of IDs we want to keep
+            keep_ids = set()
+            for entry in entries_data:
+                existing_id = entry.get('id', '')
+                if existing_id:
+                    # Update existing entry
+                    try:
+                        obj = FinalQuizAudio.objects.get(id=existing_id, final_quiz=fq)
+                        obj.min_percentage = entry['min_percentage']
+                        obj.max_percentage = entry['max_percentage']
+                        obj.label = entry['label']
+                        if entry['audio_file']:
+                            obj.audio = entry['audio_file']
+                        obj.save()
+                        keep_ids.add(str(obj.id))
+                    except FinalQuizAudio.DoesNotExist:
+                        existing_id = ''  # treat as new
+
+                if not existing_id:
+                    # Create new entry
+                    obj = FinalQuizAudio.objects.create(
+                        final_quiz=fq,
+                        min_percentage=entry['min_percentage'],
+                        max_percentage=entry['max_percentage'],
+                        label=entry['label'],
+                    )
+                    if entry['audio_file']:
+                        obj.audio = entry['audio_file']
+                        obj.save(update_fields=['audio'])
+                    keep_ids.add(str(obj.id))
+
+            # Delete entries that were removed by admin
+            FinalQuizAudio.objects.filter(final_quiz=fq).exclude(id__in=keep_ids).delete()
 
         return Response(
             FinalQuizSerializer(fq, context={'request': request}).data,
@@ -1040,3 +1115,195 @@ class ChargilyWebhookView(View):
 
         return JsonResponse({}, status=200)
 
+
+# ─── Promo Code ────────────────────────────────────────────────────────────────
+
+class PromoCodeViewSet(viewsets.ModelViewSet):
+    """
+    Admin CRUD for promo codes + public validate action.
+
+    Admin: GET/POST/PUT/DELETE /promo-codes/
+    Public: POST /promo-codes/validate/
+    """
+    queryset = PromoCode.objects.all()
+    serializer_class = PromoCodeSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_permissions(self):
+        if self.action == 'validate':
+            return [IsAuthenticated()]
+        return [IsAdminOrReadOnly()]
+
+    @action(detail=False, methods=['post'])
+    def validate(self, request):
+        """Validate a promo code for a specific course."""
+        ser = PromoCodeValidateSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+
+        code_str = ser.validated_data['code'].strip().upper()
+        course_id = ser.validated_data['course_id']
+
+        try:
+            promo = PromoCode.objects.get(code__iexact=code_str)
+        except PromoCode.DoesNotExist:
+            return Response({'valid': False, 'message': 'Code promo invalide.'}, status=400)
+
+        if not promo.is_valid:
+            return Response({'valid': False, 'message': 'Ce code promo a expiré ou est épuisé.'}, status=400)
+
+        # Check per-user limit
+        user_usage = PromoCodeUsage.objects.filter(user=request.user, promo_code=promo).count()
+        if user_usage >= promo.max_uses_per_user:
+            return Response({'valid': False, 'message': 'Vous avez déjà utilisé ce code.'}, status=400)
+
+        # Check course restriction
+        if promo.courses.exists() and not promo.courses.filter(id=course_id).exists():
+            return Response({'valid': False, 'message': 'Ce code ne s\'applique pas à ce cours.'}, status=400)
+
+        # Get course price
+        try:
+            course = Course.objects.get(id=course_id)
+        except Course.DoesNotExist:
+            return Response({'valid': False, 'message': 'Cours introuvable.'}, status=404)
+
+        original_price = course.price if hasattr(course, 'price') else 0
+        if promo.min_order_total and original_price < promo.min_order_total:
+            return Response({
+                'valid': False,
+                'message': f'Le montant minimum est de {promo.min_order_total} DZD.',
+            }, status=400)
+
+        discount_amount = promo.compute_discount(original_price)
+        final_price = max(0, original_price - discount_amount)
+
+        return Response({
+            'valid': True,
+            'code': promo.code,
+            'discount_type': promo.discount_type,
+            'discount_value': str(promo.discount_value),
+            'discount_amount': discount_amount,
+            'final_price': final_price,
+            'message': f'Code appliqué ! Réduction de {discount_amount} DZD.',
+        })
+
+
+# ─── Course Gift ───────────────────────────────────────────────────────────────
+
+class CourseGiftViewSet(viewsets.GenericViewSet):
+    """
+    Gift a course to someone or claim a gift.
+
+    POST /gifts/send/      — Purchase and send a gift
+    POST /gifts/claim/     — Claim a gift by code
+    GET  /gifts/my-sent/   — List gifts sent by current user
+    GET  /gifts/my-received/ — List gifts received by current user
+    """
+    serializer_class = CourseGiftSerializer
+    permission_classes = [IsAuthenticated]
+
+    @action(detail=False, methods=['post'])
+    def send(self, request):
+        """Send a course as a gift."""
+        ser = CourseGiftSendSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+
+        course_id = ser.validated_data['course_id']
+        recipient_email = ser.validated_data['recipient_email']
+        message = ser.validated_data.get('message', '')
+
+        try:
+            course = Course.objects.get(id=course_id)
+        except Course.DoesNotExist:
+            return Response({'detail': 'Cours introuvable.'}, status=404)
+
+        # Don't gift to yourself
+        if recipient_email == request.user.email:
+            return Response({'detail': 'Vous ne pouvez pas vous offrir un cours.'}, status=400)
+
+        # Create order for the sender
+        price = course.price if hasattr(course, 'price') else 0
+        order = Order.objects.create(
+            user=request.user,
+            total=price,
+            status=OrderStatus.PAID if price == 0 else OrderStatus.PENDING,
+            paymentMethod=PaymentMethod.FREE if price == 0 else PaymentMethod.CARD,
+        )
+        OrderItem.objects.create(order=order, course=course, price=price)
+
+        # Create the gift
+        from django.utils import timezone
+        import datetime
+        gift = CourseGift.objects.create(
+            sender=request.user,
+            recipient_email=recipient_email,
+            course=course,
+            order=order,
+            message=message,
+            expires_at=timezone.now() + datetime.timedelta(days=90),
+        )
+
+        # Send email notification to recipient (non-blocking)
+        import threading
+        from formation.services.gift_email import send_gift_email
+        sender_name = request.user.get_full_name() or request.user.email
+        threading.Thread(
+            target=send_gift_email,
+            args=(recipient_email, sender_name, course.title, gift.gift_code, message),
+            daemon=True,
+        ).start()
+
+        return Response({
+            'gift_code': gift.gift_code,
+            'recipient_email': gift.recipient_email,
+            'course_title': course.title,
+            'message': f'Cadeau envoyé ! Code: {gift.gift_code}',
+        }, status=201)
+
+    @action(detail=False, methods=['post'])
+    def claim(self, request):
+        """Claim a gift by code — auto-enrolls the user."""
+        ser = CourseGiftClaimSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+
+        gift_code = ser.validated_data['gift_code'].strip().upper()
+
+        try:
+            gift = CourseGift.objects.get(gift_code__iexact=gift_code)
+        except CourseGift.DoesNotExist:
+            return Response({'detail': 'Code cadeau invalide.'}, status=400)
+
+        if not gift.is_valid:
+            return Response({'detail': 'Ce cadeau a déjà été réclamé ou a expiré.'}, status=400)
+
+        # Check if user is already enrolled
+        if Enrollment.objects.filter(user=request.user, course=gift.course).exists():
+            return Response({'detail': 'Vous êtes déjà inscrit à ce cours.'}, status=400)
+
+        # Enroll the user
+        from django.utils import timezone
+        Enrollment.objects.create(user=request.user, course=gift.course)
+        gift.recipient_user = request.user
+        gift.status = GiftStatus.CLAIMED
+        gift.claimed_at = timezone.now()
+        gift.save(update_fields=['recipient_user', 'status', 'claimed_at'])
+
+        return Response({
+            'detail': 'Cadeau réclamé ! Vous êtes maintenant inscrit.',
+            'course_id': str(gift.course.id),
+            'course_slug': gift.course.slug,
+        })
+
+    @action(detail=False, methods=['get'], url_path='my-sent')
+    def my_sent(self, request):
+        """List gifts sent by the current user."""
+        gifts = CourseGift.objects.filter(sender=request.user)
+        return Response(CourseGiftSerializer(gifts, many=True).data)
+
+    @action(detail=False, methods=['get'], url_path='my-received')
+    def my_received(self, request):
+        """List gifts received by the current user."""
+        gifts = CourseGift.objects.filter(
+            db_models.Q(recipient_user=request.user) |
+            db_models.Q(recipient_email=request.user.email)
+        )
+        return Response(CourseGiftSerializer(gifts, many=True).data)

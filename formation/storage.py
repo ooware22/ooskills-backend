@@ -142,8 +142,11 @@ def audio_upload_path(instance, filename):
     This keeps audio files organised by course in the Supabase bucket.
     """
     # FinalQuiz has a direct `course` FK; Lesson goes through `section`.
+    # FinalQuizAudio goes through `final_quiz.course`.
     if hasattr(instance, 'course_id') and instance.course_id:
         course_id = str(instance.course_id)
+    elif hasattr(instance, 'final_quiz_id') and instance.final_quiz_id:
+        course_id = str(instance.final_quiz.course_id)
     else:
         course_id = str(instance.section.course_id)
     ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else 'mp3'

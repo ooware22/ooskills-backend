@@ -491,6 +491,41 @@ class FinalQuiz(models.Model):
         return f'Final Quiz — {self.course.title}'
 
 
+class FinalQuizAudio(models.Model):
+    """Audio file played based on the student's score percentage range."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    final_quiz = models.ForeignKey(
+        FinalQuiz, on_delete=models.CASCADE, related_name='audio_entries',
+    )
+    min_percentage = models.PositiveIntegerField(
+        default=0, help_text='Inclusive lower bound of score range (0-100)',
+    )
+    max_percentage = models.PositiveIntegerField(
+        default=100, help_text='Inclusive upper bound of score range (0-100)',
+    )
+    label = models.CharField(
+        max_length=200, blank=True,
+        help_text='Optional label, e.g. "Keep trying!" or "Almost there!"',
+    )
+    audio = models.FileField(
+        'Audio file',
+        upload_to=audio_upload_path,
+        storage=SupabaseAudioStorage(),
+        blank=True,
+        help_text='Audio file for this score range — uploaded to Supabase',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = 'Audio par pourcentage'
+        verbose_name_plural = 'Audios par pourcentage'
+        ordering = ['min_percentage']
+
+    def __str__(self):
+        return f'{self.min_percentage}%-{self.max_percentage}% — {self.final_quiz}'
+
+
 # =============================================================================
 # ENROLLMENT
 # =============================================================================
@@ -923,4 +958,178 @@ class CourseRating(models.Model):
         course.rating = round(agg['avg'] or 0, 2)
         course.reviews = agg['cnt']
         course.save(update_fields=['rating', 'reviews'])
+
+
+# =============================================================================
+# PROMO CODE
+# =============================================================================
+
+class DiscountType(models.TextChoices):
+    PERCENTAGE = 'percentage', 'Pourcentage'
+    FIXED = 'fixed', 'Montant fixe (DZD)'
+
+
+class PromoCode(models.Model):
+    """Discount / coupon code that students can apply at checkout."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    code = models.CharField(
+        max_length=50, unique=True, db_index=True,
+        help_text='Code unique (ex: WELCOME20, SUMMER50)',
+    )
+    discount_type = models.CharField(
+        max_length=20, choices=DiscountType.choices,
+        default=DiscountType.PERCENTAGE,
+    )
+    discount_value = models.DecimalField(
+        max_digits=10, decimal_places=2, default=0,
+        help_text='Valeur du réduction (% ou DZD)',
+    )
+    max_uses = models.PositiveIntegerField(
+        default=0, help_text='0 = illimité',
+    )
+    uses_count = models.PositiveIntegerField(default=0)
+    max_uses_per_user = models.PositiveIntegerField(
+        default=1, help_text='Combien de fois un même utilisateur peut utiliser ce code',
+    )
+    valid_from = models.DateTimeField(null=True, blank=True)
+    valid_until = models.DateTimeField(null=True, blank=True)
+    min_order_total = models.PositiveIntegerField(
+        default=0, help_text='Montant minimum de commande (DZD) — 0 = pas de minimum',
+    )
+    courses = models.ManyToManyField(
+        Course, blank=True, related_name='promo_codes',
+        help_text='Vide = applicable à tous les cours',
+    )
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = 'Code promo'
+        verbose_name_plural = 'Codes promo'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'{self.code} ({self.discount_value}{"%" if self.discount_type == "percentage" else " DZD"})'
+
+    @property
+    def is_valid(self):
+        if not self.is_active:
+            return False
+        if self.max_uses and self.uses_count >= self.max_uses:
+            return False
+        now = timezone.now()
+        if self.valid_from and now < self.valid_from:
+            return False
+        if self.valid_until and now > self.valid_until:
+            return False
+        return True
+
+    def compute_discount(self, original_price: int) -> int:
+        """Return discount amount in DZD (capped at original price)."""
+        if self.discount_type == DiscountType.PERCENTAGE:
+            discount = int(original_price * float(self.discount_value) / 100)
+        else:
+            discount = int(self.discount_value)
+        return min(discount, original_price)
+
+
+class PromoCodeUsage(models.Model):
+    """Tracks each promo code redemption."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+        related_name='promo_usages',
+    )
+    promo_code = models.ForeignKey(
+        PromoCode, on_delete=models.CASCADE, related_name='usages',
+    )
+    order = models.ForeignKey(
+        Order, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='promo_usages',
+    )
+    discount_applied = models.PositiveIntegerField(
+        default=0, help_text='Discount amount in DZD',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = 'Utilisation code promo'
+        verbose_name_plural = 'Utilisations codes promo'
+
+    def __str__(self):
+        return f'{self.user} used {self.promo_code.code}'
+
+
+# =============================================================================
+# COURSE GIFT
+# =============================================================================
+
+class GiftStatus(models.TextChoices):
+    PENDING = 'pending', 'En attente'
+    CLAIMED = 'claimed', 'Réclamé'
+    EXPIRED = 'expired', 'Expiré'
+
+
+class CourseGift(models.Model):
+    """Gift a course to someone by email."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    sender = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+        related_name='gifts_sent',
+    )
+    recipient_email = models.EmailField(
+        help_text='Email du destinataire',
+    )
+    recipient_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='gifts_received',
+        help_text='Lié au compte quand le cadeau est réclamé',
+    )
+    course = models.ForeignKey(
+        Course, on_delete=models.CASCADE, related_name='gifts',
+    )
+    order = models.ForeignKey(
+        Order, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='gifts',
+    )
+    gift_code = models.CharField(
+        max_length=30, unique=True, db_index=True,
+    )
+    message = models.TextField(
+        blank=True, help_text='Message personnel du donneur',
+    )
+    status = models.CharField(
+        max_length=20, choices=GiftStatus.choices,
+        default=GiftStatus.PENDING,
+    )
+    expires_at = models.DateTimeField(
+        null=True, blank=True,
+        help_text='Expiration du cadeau',
+    )
+    claimed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = 'Cadeau de cours'
+        verbose_name_plural = 'Cadeaux de cours'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'Gift {self.gift_code} — {self.course} → {self.recipient_email}'
+
+    def save(self, *args, **kwargs):
+        if not self.gift_code:
+            self.gift_code = f'GIFT-{secrets.token_hex(4).upper()}'
+        super().save(*args, **kwargs)
+
+    @property
+    def is_valid(self):
+        if self.status != GiftStatus.PENDING:
+            return False
+        if self.expires_at and timezone.now() > self.expires_at:
+            return False
+        return True
 

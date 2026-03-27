@@ -66,9 +66,18 @@ def generate_final_quiz_questions(enrollment: Enrollment) -> list[dict]:
     ).count()
 
     if final_quiz.max_attempts > 0 and existing_attempts >= final_quiz.max_attempts:
-        raise FinalQuizLimitExceeded(
-            f'Maximum attempts ({final_quiz.max_attempts}) reached for the final quiz.'
-        )
+        # Check if the student has ever passed
+        has_passed = FinalQuizAttempt.objects.filter(
+            enrollment=enrollment, final_quiz=final_quiz, passed=True,
+        ).exists()
+        if has_passed:
+            raise FinalQuizLimitExceeded(
+                f'Maximum attempts ({final_quiz.max_attempts}) reached for the final quiz.'
+            )
+        # Student never passed — reset attempts so they can try again
+        FinalQuizAttempt.objects.filter(
+            enrollment=enrollment, final_quiz=final_quiz,
+        ).delete()
 
     # Gather all questions from section quizzes
     all_questions = list(
@@ -133,9 +142,19 @@ def submit_final_quiz(
         ).count()
 
         if final_quiz.max_attempts > 0 and existing_attempts >= final_quiz.max_attempts:
-            raise FinalQuizLimitExceeded(
-                f'Maximum attempts ({final_quiz.max_attempts}) reached for the final quiz.'
-            )
+            # Check if the student has ever passed
+            has_passed = FinalQuizAttempt.objects.filter(
+                enrollment=enrollment, final_quiz=final_quiz, passed=True,
+            ).exists()
+            if has_passed:
+                raise FinalQuizLimitExceeded(
+                    f'Maximum attempts ({final_quiz.max_attempts}) reached for the final quiz.'
+                )
+            # Student never passed — reset attempts so they can try again
+            FinalQuizAttempt.objects.filter(
+                enrollment=enrollment, final_quiz=final_quiz,
+            ).delete()
+            existing_attempts = 0
 
         # Fetch only the specific questions that were presented
         questions = {

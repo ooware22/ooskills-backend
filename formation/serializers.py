@@ -10,9 +10,10 @@ The frontend picks the right language based on user preference.
 from rest_framework import serializers
 
 from formation.models import (
-    Category, Certificate, Course, CourseMaterial, CourseRating, Enrollment,
-    FinalQuiz, FinalQuizAttempt,
+    Category, Certificate, Course, CourseMaterial, CourseGift, CourseRating,
+    Enrollment, FinalQuiz, FinalQuizAttempt, FinalQuizAudio,
     Lesson, LessonNote, LessonProgress, Order, OrderItem,
+    PromoCode, PromoCodeUsage,
     QuizAttempt, Quiz, QuizQuestion, Section, ShareToken,
 )
 
@@ -300,17 +301,26 @@ class QuizSubmitSerializer(serializers.Serializer):
 
 # ─── Final Quiz ──────────────────────────────────────────────────────────────
 
+class FinalQuizAudioSerializer(serializers.ModelSerializer):
+    """Audio entry tied to a score percentage range."""
+
+    class Meta:
+        model = FinalQuizAudio
+        fields = ['id', 'min_percentage', 'max_percentage', 'label', 'audio']
+
+
 class FinalQuizSerializer(serializers.ModelSerializer):
     """Read-only config for the course final quiz."""
     remaining_attempts = serializers.SerializerMethodField()
     has_passed = serializers.SerializerMethodField()
+    audio_entries = FinalQuizAudioSerializer(many=True, read_only=True)
 
     class Meta:
         model = FinalQuiz
         fields = [
             'id', 'course', 'title', 'num_questions',
             'pass_threshold', 'max_attempts', 'xp_reward',
-            'motivation_audio',
+            'motivation_audio', 'audio_entries',
             'remaining_attempts', 'has_passed',
         ]
 
@@ -512,3 +522,67 @@ class CourseRatingCreateSerializer(serializers.Serializer):
     rating = serializers.IntegerField(min_value=1, max_value=5)
     review_text = serializers.CharField(required=False, allow_blank=True, default='')
 
+
+# ─── Promo Code ──────────────────────────────────────────────────────────────
+
+class PromoCodeSerializer(serializers.ModelSerializer):
+    """Full promo code details (admin view)."""
+    course_ids = serializers.PrimaryKeyRelatedField(
+        many=True, queryset=Course.objects.all(),
+        source='courses', required=False,
+    )
+
+    class Meta:
+        model = PromoCode
+        fields = [
+            'id', 'code', 'discount_type', 'discount_value',
+            'max_uses', 'uses_count', 'max_uses_per_user',
+            'valid_from', 'valid_until', 'min_order_total',
+            'course_ids', 'is_active', 'created_at',
+        ]
+        read_only_fields = ['id', 'uses_count', 'created_at']
+
+
+class PromoCodeValidateSerializer(serializers.Serializer):
+    """Input for validating a promo code at checkout."""
+    code = serializers.CharField(max_length=50)
+    course_id = serializers.UUIDField()
+
+
+# ─── Course Gift ─────────────────────────────────────────────────────────────
+
+class CourseGiftSerializer(serializers.ModelSerializer):
+    """Read serializer for gifts."""
+    course_title = serializers.SerializerMethodField()
+    sender_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CourseGift
+        fields = [
+            'id', 'sender', 'recipient_email', 'recipient_user',
+            'course', 'course_title', 'sender_name',
+            'gift_code', 'message', 'status',
+            'expires_at', 'claimed_at', 'created_at',
+        ]
+        read_only_fields = fields
+
+    def get_course_title(self, obj):
+        return obj.course.title if obj.course else ''
+
+    def get_sender_name(self, obj):
+        u = obj.sender
+        if u.first_name:
+            return f'{u.first_name} {u.last_name}'.strip()
+        return u.email.split('@')[0]
+
+
+class CourseGiftSendSerializer(serializers.Serializer):
+    """Input for sending a course gift."""
+    course_id = serializers.UUIDField()
+    recipient_email = serializers.EmailField()
+    message = serializers.CharField(required=False, allow_blank=True, default='')
+
+
+class CourseGiftClaimSerializer(serializers.Serializer):
+    """Input for claiming a gift."""
+    gift_code = serializers.CharField(max_length=30)
