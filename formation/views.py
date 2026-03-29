@@ -1220,15 +1220,26 @@ class CourseGiftViewSet(viewsets.GenericViewSet):
         if recipient_email == request.user.email:
             return Response({'detail': 'Vous ne pouvez pas vous offrir un cours.'}, status=400)
 
-        # Create order for the sender
+        # Sender must own (be enrolled in) the course
+        if not Enrollment.objects.filter(user=request.user, course=course).exists():
+            return Response({'detail': 'Vous devez être inscrit à ce cours pour l\'offrir.'}, status=400)
+
+        # Check if recipient is already enrolled
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+        recipient_user = User.objects.filter(email=recipient_email).first()
+        if recipient_user and Enrollment.objects.filter(user=recipient_user, course=course).exists():
+            return Response({'detail': 'Ce destinataire est déjà inscrit à ce cours.'}, status=400)
+
+        # Create gift order (no new charge — sender already paid)
         price = course.price if hasattr(course, 'price') else 0
         order = Order.objects.create(
             user=request.user,
-            total=price,
-            status=OrderStatus.PAID if price == 0 else OrderStatus.PENDING,
-            paymentMethod=PaymentMethod.FREE if price == 0 else PaymentMethod.CARD,
+            total=0,  # No charge — it's a gift from an owned course
+            status=OrderStatus.PAID,
+            paymentMethod=PaymentMethod.FREE,
         )
-        OrderItem.objects.create(order=order, course=course, price=price)
+        OrderItem.objects.create(order=order, course=course, price=0)
 
         # Create the gift
         from django.utils import timezone

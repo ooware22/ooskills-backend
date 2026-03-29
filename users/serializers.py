@@ -213,13 +213,17 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
         if referral_code_str:
             try:
                 ref_code = ReferralCode.objects.get(code=referral_code_str, is_active=True)
+                # Reward per referral (in DZD)
+                REFERRAL_REWARD = 200
                 Referral.objects.create(
                     referrer=ref_code.user,
                     referred=user,
-                    referral_code=ref_code
+                    referral_code=ref_code,
+                    reward_amount=REFERRAL_REWARD,
                 )
                 ref_code.uses_count += 1
-                ref_code.save(update_fields=['uses_count'])
+                ref_code.reward_earned += REFERRAL_REWARD
+                ref_code.save(update_fields=['uses_count', 'reward_earned'])
             except ReferralCode.DoesNotExist:
                 pass
         
