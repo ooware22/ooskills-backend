@@ -27,6 +27,9 @@ from content.models import (
     FALLBACK_ORDER,
 )
 
+UNLIMITED_HELP_TEXT = '0 = unlimited'
+UNTITLED_NAME = '(untitled)'
+
 
 # =============================================================================
 # CATEGORY
@@ -157,7 +160,7 @@ class Course(models.Model):
         ]
 
     def __str__(self):
-        return self.title or '(untitled)'
+        return self.title or UNTITLED_NAME
 
     def save(self, *args, **kwargs):
         if not self.slug:
@@ -270,16 +273,25 @@ class Section(models.Model):
         return f'{self.course.title} — {self.title}'
 
     # Computed properties used by serializer
+    # When accessed from CourseViewSet (which annotates _lessons_count and
+    # _total_duration_seconds), these use the pre-computed values — 0 extra queries.
+    # When accessed standalone, they fall back to per-object DB queries.
+
     @property
     def lessons_count(self):
+        if hasattr(self, '_lessons_count'):
+            return self._lessons_count
         return self.lessons.count()
 
     @property
     def total_duration(self):
         """Human-readable duration string based on child lessons."""
-        total_seconds = self.lessons.aggregate(
-            total=models.Sum('duration_seconds')
-        )['total'] or 0
+        if hasattr(self, '_total_duration_seconds'):
+            total_seconds = self._total_duration_seconds or 0
+        else:
+            total_seconds = self.lessons.aggregate(
+                total=models.Sum('duration_seconds')
+            )['total'] or 0
         hours = total_seconds / 3600
         if hours >= 1:
             return f'{hours:.1f}h'.replace('.0h', 'h')
@@ -356,7 +368,7 @@ class Lesson(models.Model):
         unique_together = [['section', 'sequence']]
 
     def __str__(self):
-        return self.title or '(untitled)'
+        return self.title or UNTITLED_NAME
 
 
 # =============================================================================
@@ -376,7 +388,7 @@ class Quiz(models.Model):
         default=70, help_text='Percentage required to pass (0-100)',
     )
     max_attempts = models.PositiveIntegerField(
-        default=3, help_text='0 = unlimited',
+        default=3, help_text=UNLIMITED_HELP_TEXT,
     )
     xp_reward = models.PositiveIntegerField(
         default=10, help_text='XP points awarded on pass',
@@ -389,7 +401,7 @@ class Quiz(models.Model):
         verbose_name_plural = 'Quiz'
 
     def __str__(self):
-        return self.title or '(untitled)'
+        return self.title or UNTITLED_NAME
 
 
 class QuestionType(models.TextChoices):
@@ -468,7 +480,7 @@ class FinalQuiz(models.Model):
         default=70, help_text='Percentage required to pass (0-100)',
     )
     max_attempts = models.PositiveIntegerField(
-        default=3, help_text='0 = unlimited',
+        default=3, help_text=UNLIMITED_HELP_TEXT,
     )
     xp_reward = models.PositiveIntegerField(
         default=50, help_text='XP points awarded on pass',
@@ -876,7 +888,7 @@ class ShareToken(models.Model):
         default=ShareVisibility.TOKEN,
     )
     max_uses = models.PositiveIntegerField(
-        default=0, help_text='0 = unlimited',
+        default=0, help_text=UNLIMITED_HELP_TEXT,
     )
     uses_count = models.PositiveIntegerField(default=0)
     expires_at = models.DateTimeField(null=True, blank=True)

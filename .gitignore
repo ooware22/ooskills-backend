@@ -133,3 +133,4 @@ docker-compose.override.yml
 *.temp
 .cache/
 secrets.json
+/performance_tests

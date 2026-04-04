@@ -49,6 +49,9 @@ def _delete_from_supabase(bucket_name, name):
         logger.exception("Supabase delete FAILED  bucket=%s path=%s", bucket_name, name)
 
 
+CONTENT_TYPE_JPEG = 'image/jpeg'
+CONTENT_TYPE_PNG = 'image/png'
+
 AUDIO_CONTENT_TYPES = {
     'mp3': 'audio/mpeg',
     'wav': 'audio/wav',
@@ -59,9 +62,9 @@ AUDIO_CONTENT_TYPES = {
 }
 
 IMAGE_CONTENT_TYPES = {
-    'jpg': 'image/jpeg',
-    'jpeg': 'image/jpeg',
-    'png': 'image/png',
+    'jpg': CONTENT_TYPE_JPEG,
+    'jpeg': CONTENT_TYPE_JPEG,
+    'png': CONTENT_TYPE_PNG,
     'gif': 'image/gif',
     'webp': 'image/webp',
     'svg': 'image/svg+xml',
@@ -242,9 +245,9 @@ MATERIAL_CONTENT_TYPES = {
     'mp4': 'video/mp4',
     'zip': 'application/zip',
     'txt': 'text/plain',
-    'jpg': 'image/jpeg',
-    'jpeg': 'image/jpeg',
-    'png': 'image/png',
+    'jpg': CONTENT_TYPE_JPEG,
+    'jpeg': CONTENT_TYPE_JPEG,
+    'png': CONTENT_TYPE_PNG,
 }
 
 
@@ -320,9 +323,9 @@ DIAPOSITIVE_CONTENT_TYPES = {
     'pdf': 'application/pdf',
     'ppt': 'application/vnd.ms-powerpoint',
     'pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-    'jpg': 'image/jpeg',
-    'jpeg': 'image/jpeg',
-    'png': 'image/png',
+    'jpg': CONTENT_TYPE_JPEG,
+    'jpeg': CONTENT_TYPE_JPEG,
+    'png': CONTENT_TYPE_PNG,
     'gif': 'image/gif',
     'webp': 'image/webp',
     'svg': 'image/svg+xml',

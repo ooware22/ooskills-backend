@@ -24,7 +24,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-v)=km@-@b*!*845ugddi30*z@l2o%l=1=mciiv)clby4q_2uy1'
+SECRET_KEY = os.environ.get('SECRET_KEY')
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.environ.get('DEBUG', 'True').lower() in ('true', '1', 'yes')
@@ -34,6 +34,8 @@ ALLOWED_HOSTS = [
     '127.0.0.1',
     '.onrender.com',  # All Render subdomains
     'ooskills-backend.onrender.com',
+    '[::1]', 
+    'host.docker.internal'
       # Your specific Render domain
 ]
 
@@ -113,6 +115,7 @@ DATABASES = {
         'OPTIONS': {
             'sslmode': 'require',
         },
+        'CONN_MAX_AGE': 600,  # Keep connections alive 10 min (avoid reconnect overhead)
     }
 }
 

@@ -17,6 +17,10 @@ from .models import User, UserRole, UserStatus, ReferralCode, Referral, ALGERIAN
 from .storage import upload_avatar, delete_avatar, create_supabase_auth_user
 from .email import send_verification_email
 
+DEFAULT_IMAGE_TYPE = 'image/jpeg'
+MISMATCH_ERROR_MSG = "Les mots de passe ne correspondent pas."
+FILE_SIZE_ERROR_MSG = "La taille du fichier ne doit pas dépasser 5 Mo."
+
 
 # =============================================================================
 # AUTHENTICATION SERIALIZERS
@@ -145,8 +149,9 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
     
     def validate(self, attrs):
         if attrs['password'] != attrs.pop('password_confirm'):
+            error_msg = MISMATCH_ERROR_MSG
             raise serializers.ValidationError({
-                'password_confirm': "Les mots de passe ne correspondent pas."
+                'password_confirm': error_msg
             })
         return attrs
     
@@ -163,9 +168,7 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
         if value:
             max_size = 5 * 1024 * 1024
             if value.size > max_size:
-                raise serializers.ValidationError(
-                    "La taille du fichier ne doit pas dépasser 5 Mo."
-                )
+                raise serializers.ValidationError(FILE_SIZE_ERROR_MSG)
             allowed_extensions = ['jpg', 'jpeg', 'png', 'webp', 'gif']
             file_extension = value.name.split('.')[-1].lower()
             if file_extension not in allowed_extensions:
@@ -244,12 +247,12 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
                         file_ext = file_name.split('.')[-1].lower()
                         path = f"avatars/{user_id}.{file_ext}"
                         content_types = {
-                            'jpg': 'image/jpeg', 'jpeg': 'image/jpeg',
+                            'jpg': DEFAULT_IMAGE_TYPE, 'jpeg': DEFAULT_IMAGE_TYPE,
                             'png': 'image/png', 'webp': 'image/webp', 'gif': 'image/gif',
                         }
                         supabase.storage.from_('avatars').upload(
                             path=path, file=file_content,
-                            file_options={'content-type': content_types.get(file_ext, 'image/jpeg'), 'upsert': 'true'}
+                            file_options={'content-type': content_types.get(file_ext, DEFAULT_IMAGE_TYPE), 'upsert': 'true'}
                         )
                         public_url = supabase.storage.from_('avatars').get_public_url(path)
                         from .models import User as UserModel
@@ -323,9 +326,7 @@ class UserProfileUpdateSerializer(serializers.ModelSerializer):
             # Check file size (max 5MB)
             max_size = 5 * 1024 * 1024
             if value.size > max_size:
-                raise serializers.ValidationError(
-                    "La taille du fichier ne doit pas dépasser 5 Mo."
-                )
+                raise serializers.ValidationError(FILE_SIZE_ERROR_MSG)
             # Check file extension
             allowed_extensions = ['jpg', 'jpeg', 'png', 'webp', 'gif']
             file_extension = value.name.split('.')[-1].lower()
@@ -370,8 +371,9 @@ class ChangePasswordSerializer(serializers.Serializer):
     
     def validate(self, attrs):
         if attrs['new_password'] != attrs['new_password_confirm']:
+            error_msg = MISMATCH_ERROR_MSG
             raise serializers.ValidationError({
-                'new_password_confirm': "Les mots de passe ne correspondent pas."
+                'new_password_confirm': error_msg
             })
         return attrs
     
@@ -404,8 +406,9 @@ class ResetPasswordSerializer(serializers.Serializer):
     
     def validate(self, attrs):
         if attrs['new_password'] != attrs['new_password_confirm']:
+            error_msg = MISMATCH_ERROR_MSG
             raise serializers.ValidationError({
-                'new_password_confirm': "Les mots de passe ne correspondent pas."
+                'new_password_confirm': error_msg
             })
         return attrs
 
@@ -460,9 +463,7 @@ class AdminUserCreateSerializer(serializers.ModelSerializer):
         if value:
             max_size = 5 * 1024 * 1024
             if value.size > max_size:
-                raise serializers.ValidationError(
-                    "La taille du fichier ne doit pas dépasser 5 Mo."
-                )
+                raise serializers.ValidationError(FILE_SIZE_ERROR_MSG)
             allowed_extensions = ['jpg', 'jpeg', 'png', 'webp', 'gif']
             file_extension = value.name.split('.')[-1].lower()
             if file_extension not in allowed_extensions:
@@ -520,12 +521,12 @@ class AdminUserCreateSerializer(serializers.ModelSerializer):
                         file_ext = file_name.split('.')[-1].lower()
                         path = f"avatars/{user_id}.{file_ext}"
                         content_types = {
-                            'jpg': 'image/jpeg', 'jpeg': 'image/jpeg',
+                            'jpg': DEFAULT_IMAGE_TYPE, 'jpeg': DEFAULT_IMAGE_TYPE,
                             'png': 'image/png', 'webp': 'image/webp', 'gif': 'image/gif',
                         }
                         supabase.storage.from_('avatars').upload(
                             path=path, file=file_content,
-                            file_options={'content-type': content_types.get(file_ext, 'image/jpeg'), 'upsert': 'true'}
+                            file_options={'content-type': content_types.get(file_ext, DEFAULT_IMAGE_TYPE), 'upsert': 'true'}
                         )
                         public_url = supabase.storage.from_('avatars').get_public_url(path)
                         User.objects.filter(id=user_id).update(avatar_url=public_url)
@@ -565,9 +566,7 @@ class AdminUserUpdateSerializer(serializers.ModelSerializer):
         if value:
             max_size = 5 * 1024 * 1024
             if value.size > max_size:
-                raise serializers.ValidationError(
-                    "La taille du fichier ne doit pas dépasser 5 Mo."
-                )
+                raise serializers.ValidationError(FILE_SIZE_ERROR_MSG)
             allowed_extensions = ['jpg', 'jpeg', 'png', 'webp', 'gif']
             file_extension = value.name.split('.')[-1].lower()
             if file_extension not in allowed_extensions:

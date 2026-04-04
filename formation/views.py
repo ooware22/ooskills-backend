@@ -6,6 +6,7 @@ import json
 import logging
 
 from django.db import models as db_models
+from django.db.models import Count, Sum, Prefetch
 from django.http import HttpResponse, JsonResponse, HttpRequest
 from django.views import View
 from rest_framework import viewsets, status, mixins
@@ -58,6 +59,10 @@ from formation.chargily_service import create_chargily_checkout, client as charg
 
 logger = logging.getLogger(__name__)
 
+ADMIN_ONLY_MSG = 'Admin only.'
+NOT_ENROLLED_MSG = 'Not enrolled in this course.'
+COURSE_NOT_FOUND_MSG = 'Course not found.'
+
 
 # ─── Category ────────────────────────────────────────────────────────────────
 
@@ -87,8 +92,23 @@ class CourseViewSet(viewsets.ModelViewSet):
     ordering = ['-date']
 
     def get_queryset(self):
+        # Annotate sections with pre-computed lessons_count and total_duration
+        # to avoid N+1 queries from Section.lessons_count / total_duration properties
+        annotated_sections = Section.objects.annotate(
+            _lessons_count=Count('lessons'),
+            _total_duration_seconds=Sum('lessons__duration_seconds'),
+        ).prefetch_related('lessons', 'quiz__questions')
+
         qs = Course.objects.select_related('category').prefetch_related(
-            'sections__lessons',
+            Prefetch('sections', queryset=annotated_sections),
+            'materials',
+        ).annotate(
+            # Pre-compute totals used by CourseDetailSerializer
+            _total_modules=Count('sections', distinct=True),
+            _total_slides=Count('sections__lessons', distinct=True),
+            _total_quiz_questions=Count(
+                'sections__quiz__questions', distinct=True,
+            ),
         )
         # Non-admin users only see published courses
         if not (self.request.user.is_authenticated and self.request.user.is_admin):
@@ -199,6 +219,9 @@ class SectionViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         qs = Section.objects.select_related('course').prefetch_related(
             'lessons', 'quiz__questions',
+        ).annotate(
+            _lessons_count=Count('lessons'),
+            _total_duration_seconds=Sum('lessons__duration_seconds'),
         )
         course_slug = self.request.query_params.get('course')
         if course_slug:
@@ -245,7 +268,9 @@ class QuizViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAdminOrReadOnly]
 
     def get_queryset(self):
-        qs = Quiz.objects.prefetch_related('questions')
+        qs = Quiz.objects.select_related(
+            'section__course',
+        ).prefetch_related('questions')
         section_id = self.request.query_params.get('section')
         if section_id:
             qs = qs.filter(section_id=section_id)
@@ -303,7 +328,7 @@ class EnrollmentViewSet(
             course = Course.objects.get(id=ser.validated_data['courseId'])
         except Course.DoesNotExist:
             return Response(
-                {'detail': 'Course not found.'},
+                {'detail': COURSE_NOT_FOUND_MSG},
                 status=status.HTTP_404_NOT_FOUND,
             )
 
@@ -360,7 +385,7 @@ class LessonProgressViewSet(
             )
         except Enrollment.DoesNotExist:
             return Response(
-                {'detail': 'Not enrolled in this course.'},
+                {'detail': NOT_ENROLLED_MSG},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
@@ -443,7 +468,7 @@ class QuizAttemptViewSet(
             )
         except Enrollment.DoesNotExist:
             return Response(
-                {'detail': 'Not enrolled in this course.'},
+                {'detail': NOT_ENROLLED_MSG},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
@@ -620,7 +645,7 @@ class FinalQuizViewSet(viewsets.GenericViewSet):
             )
         except Enrollment.DoesNotExist:
             return Response(
-                {'detail': 'Not enrolled in this course.'},
+                {'detail': NOT_ENROLLED_MSG},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
@@ -662,7 +687,7 @@ class FinalQuizViewSet(viewsets.GenericViewSet):
             )
         except Enrollment.DoesNotExist:
             return Response(
-                {'detail': 'Not enrolled in this course.'},
+                {'detail': NOT_ENROLLED_MSG},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
@@ -746,7 +771,7 @@ class FinalQuizViewSet(viewsets.GenericViewSet):
         GET /api/formation/final-quiz/admin/get/?course_id=<uuid>
         """
         if not (request.user.is_staff or getattr(request.user, 'role', '') in ('ADMIN', 'SUPER_ADMIN')):
-            return Response({'detail': 'Admin only.'}, status=status.HTTP_403_FORBIDDEN)
+            return Response({'detail': ADMIN_ONLY_MSG}, status=status.HTTP_403_FORBIDDEN)
 
         course_id = request.query_params.get('course_id')
         if not course_id:
@@ -776,7 +801,7 @@ class FinalQuizViewSet(viewsets.GenericViewSet):
         }
         """
         if not (request.user.is_staff or getattr(request.user, 'role', '') in ('ADMIN', 'SUPER_ADMIN')):
-            return Response({'detail': 'Admin only.'}, status=status.HTTP_403_FORBIDDEN)
+            return Response({'detail': ADMIN_ONLY_MSG}, status=status.HTTP_403_FORBIDDEN)
 
         course_id = request.data.get('course_id')
         if not course_id:
@@ -786,7 +811,7 @@ class FinalQuizViewSet(viewsets.GenericViewSet):
         try:
             course = CourseModel.objects.get(id=course_id)
         except CourseModel.DoesNotExist:
-            return Response({'detail': 'Course not found.'}, status=status.HTTP_404_NOT_FOUND)
+            return Response({'detail': COURSE_NOT_FOUND_MSG}, status=status.HTTP_404_NOT_FOUND)
 
         defaults = {
             'title': request.data.get('title', 'Final Quiz'),
@@ -801,7 +826,16 @@ class FinalQuizViewSet(viewsets.GenericViewSet):
             defaults=defaults,
         )
 
-        # Handle motivation_audio file upload (legacy single audio)
+        self._handle_legacy_audio(request, fq)
+        entries_data = self._extract_audio_entries_data(request)
+        self._update_audio_entries(request, fq, entries_data)
+
+        return Response(
+            FinalQuizSerializer(fq, context={'request': request}).data,
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
+
+    def _handle_legacy_audio(self, request, fq):
         if 'motivation_audio' in request.FILES:
             fq.motivation_audio = request.FILES['motivation_audio']
             fq.save(update_fields=['motivation_audio'])
@@ -809,8 +843,7 @@ class FinalQuizViewSet(viewsets.GenericViewSet):
             fq.motivation_audio = ''
             fq.save(update_fields=['motivation_audio'])
 
-        # Handle percentage-based audio entries
-        # Collect indexed entries from form-data: audio_entries[0].min_percentage, etc.
+    def _extract_audio_entries_data(self, request):
         entries_data = []
         idx = 0
         while True:
@@ -831,46 +864,49 @@ class FinalQuizViewSet(viewsets.GenericViewSet):
                 'audio_file': request.FILES.get(audio_key),
             })
             idx += 1
+        return entries_data
 
-        if idx > 0 or request.data.get('clear_audio_entries') == 'true':
-            # Keep track of IDs we want to keep
-            keep_ids = set()
-            for entry in entries_data:
-                existing_id = entry.get('id', '')
-                if existing_id:
-                    # Update existing entry
-                    try:
-                        obj = FinalQuizAudio.objects.get(id=existing_id, final_quiz=fq)
-                        obj.min_percentage = entry['min_percentage']
-                        obj.max_percentage = entry['max_percentage']
-                        obj.label = entry['label']
-                        if entry['audio_file']:
-                            obj.audio = entry['audio_file']
-                        obj.save()
-                        keep_ids.add(str(obj.id))
-                    except FinalQuizAudio.DoesNotExist:
-                        existing_id = ''  # treat as new
+    def _update_audio_entries(self, request, fq, entries_data):
+        if not entries_data and request.data.get('clear_audio_entries') != 'true':
+            return
 
-                if not existing_id:
-                    # Create new entry
-                    obj = FinalQuizAudio.objects.create(
-                        final_quiz=fq,
-                        min_percentage=entry['min_percentage'],
-                        max_percentage=entry['max_percentage'],
-                        label=entry['label'],
-                    )
-                    if entry['audio_file']:
-                        obj.audio = entry['audio_file']
-                        obj.save(update_fields=['audio'])
-                    keep_ids.add(str(obj.id))
+        keep_ids = set()
+        for entry in entries_data:
+            obj_id = self._process_single_audio_entry(entry, fq)
+            if obj_id:
+                keep_ids.add(obj_id)
 
-            # Delete entries that were removed by admin
-            FinalQuizAudio.objects.filter(final_quiz=fq).exclude(id__in=keep_ids).delete()
+        # Delete entries that were removed by admin
+        FinalQuizAudio.objects.filter(final_quiz=fq).exclude(id__in=keep_ids).delete()
 
-        return Response(
-            FinalQuizSerializer(fq, context={'request': request}).data,
-            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
-        )
+    def _process_single_audio_entry(self, entry, fq):
+        existing_id = entry.get('id', '')
+        if existing_id:
+            # Update existing entry
+            try:
+                obj = FinalQuizAudio.objects.get(id=existing_id, final_quiz=fq)
+                obj.min_percentage = entry['min_percentage']
+                obj.max_percentage = entry['max_percentage']
+                obj.label = entry['label']
+                if entry['audio_file']:
+                    obj.audio = entry['audio_file']
+                obj.save()
+                return str(obj.id)
+            except FinalQuizAudio.DoesNotExist:
+                existing_id = ''  # treat as new
+
+        if not existing_id:
+            # Create new entry
+            obj = FinalQuizAudio.objects.create(
+                final_quiz=fq,
+                min_percentage=entry['min_percentage'],
+                max_percentage=entry['max_percentage'],
+                label=entry['label'],
+            )
+            if entry['audio_file']:
+                obj.audio = entry['audio_file']
+                obj.save(update_fields=['audio'])
+            return str(obj.id)
 
     @action(detail=False, methods=['delete'], url_path='admin/delete')
     def admin_delete(self, request):
@@ -880,7 +916,7 @@ class FinalQuizViewSet(viewsets.GenericViewSet):
         DELETE /api/formation/final-quiz/admin/delete/?course_id=<uuid>
         """
         if not (request.user.is_staff or getattr(request.user, 'role', '') in ('ADMIN', 'SUPER_ADMIN')):
-            return Response({'detail': 'Admin only.'}, status=status.HTTP_403_FORBIDDEN)
+            return Response({'detail': ADMIN_ONLY_MSG}, status=status.HTTP_403_FORBIDDEN)
 
         course_id = request.query_params.get('course_id')
         if not course_id:
@@ -1007,7 +1043,7 @@ class ShareTokenViewSet(viewsets.ModelViewSet):
             course = Course.objects.get(id=ser.validated_data['course_id'])
         except Course.DoesNotExist:
             return Response(
-                {'detail': 'Course not found.'},
+                {'detail': COURSE_NOT_FOUND_MSG},
                 status=status.HTTP_404_NOT_FOUND,
             )
 
@@ -1226,13 +1262,12 @@ class CourseGiftViewSet(viewsets.GenericViewSet):
 
         # Check if recipient is already enrolled
         from django.contrib.auth import get_user_model
-        User = get_user_model()
-        recipient_user = User.objects.filter(email=recipient_email).first()
+        user_model = get_user_model()
+        recipient_user = user_model.objects.filter(email=recipient_email).first()
         if recipient_user and Enrollment.objects.filter(user=recipient_user, course=course).exists():
             return Response({'detail': 'Ce destinataire est déjà inscrit à ce cours.'}, status=400)
 
         # Create gift order (no new charge — sender already paid)
-        price = course.price if hasattr(course, 'price') else 0
         order = Order.objects.create(
             user=request.user,
             total=0,  # No charge — it's a gift from an owned course

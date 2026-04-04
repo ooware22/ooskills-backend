@@ -18,6 +18,8 @@ from formation.models import (
 )
 
 
+COURSE_TITLE_SOURCE = 'course.title'
+
 # ─── Category ────────────────────────────────────────────────────────────────
 
 class CategorySerializer(serializers.ModelSerializer):
@@ -178,12 +180,18 @@ class CourseDetailSerializer(serializers.ModelSerializer):
         ]
 
     def get_totalModules(self, obj):
+        if hasattr(obj, '_total_modules'):
+            return obj._total_modules
         return obj.sections.count()
 
     def get_totalSlides(self, obj):
+        if hasattr(obj, '_total_slides'):
+            return obj._total_slides
         return Lesson.objects.filter(section__course=obj).count()
 
     def get_totalQuizQuestions(self, obj):
+        if hasattr(obj, '_total_quiz_questions'):
+            return obj._total_quiz_questions
         return QuizQuestion.objects.filter(quiz__section__course=obj).count()
 
 
@@ -209,7 +217,7 @@ class CourseWriteSerializer(serializers.ModelSerializer):
 # ─── Enrollment ──────────────────────────────────────────────────────────────
 
 class EnrollmentSerializer(serializers.ModelSerializer):
-    course_title = serializers.CharField(source='course.title', read_only=True)
+    course_title = serializers.CharField(source=COURSE_TITLE_SOURCE, read_only=True)
     course_slug = serializers.CharField(source='course.slug', read_only=True)
     course_image = serializers.SerializerMethodField()
 
@@ -392,7 +400,7 @@ class FinalQuizAttemptSerializer(serializers.ModelSerializer):
 # ─── Order ───────────────────────────────────────────────────────────────────
 
 class OrderItemSerializer(serializers.ModelSerializer):
-    course_title = serializers.CharField(source='course.title', read_only=True)
+    course_title = serializers.CharField(source=COURSE_TITLE_SOURCE, read_only=True)
 
     class Meta:
         model = OrderItem
@@ -422,7 +430,7 @@ class OrderCreateSerializer(serializers.Serializer):
 # ─── Certificate ─────────────────────────────────────────────────────────────
 
 class CertificateSerializer(serializers.ModelSerializer):
-    course_title = serializers.CharField(source='course.title', read_only=True)
+    course_title = serializers.CharField(source=COURSE_TITLE_SOURCE, read_only=True)
     user_name = serializers.SerializerMethodField()
     duration = serializers.SerializerMethodField()
     modules = serializers.SerializerMethodField()
@@ -471,7 +479,7 @@ class CertificateSerializer(serializers.ModelSerializer):
 # ─── Share Token ─────────────────────────────────────────────────────────────
 
 class ShareTokenSerializer(serializers.ModelSerializer):
-    course_title = serializers.CharField(source='course.title', read_only=True)
+    course_title = serializers.CharField(source=COURSE_TITLE_SOURCE, read_only=True)
     is_valid = serializers.BooleanField(read_only=True)
 
     class Meta:
