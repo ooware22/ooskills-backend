@@ -9,12 +9,50 @@ from django.conf import settings
 from supabase import create_client, Client
 
 
+
+
+# ── Suppress "Storage endpoint URL should have a trailing slash" spam ──
+# The storage3 SDK prints this on every storage.from_() call (line 20 of
+# storage3/_sync/bucket.py).  We monkey-patch __init__ to silently fix
+# the URL without printing.
+try:
+    from storage3._sync.bucket import SyncStorageBucketAPI as _SyncBucket
+    from storage3._async.bucket import AsyncStorageBucketAPI as _AsyncBucket
+    from yarl import URL as _URL
+    from httpx import Client as _Client, Headers as _Headers
+
+    def _quiet_sync_init(self, session: _Client, url: str, headers: _Headers) -> None:
+        if url and url[-1] != "/":
+            url += "/"
+        self._base_url = _URL(url)
+        self._client = session
+        self._headers = headers
+
+    _SyncBucket.__init__ = _quiet_sync_init  # type: ignore[assignment]
+
+    # Same for async variant
+    def _quiet_async_init(self, session, url: str, headers) -> None:
+        if url and url[-1] != "/":
+            url += "/"
+        self._base_url = _URL(url)
+        self._client = session
+        self._headers = headers
+
+    _AsyncBucket.__init__ = _quiet_async_init  # type: ignore[assignment]
+except Exception:
+    pass  # If the patch fails, just let the original print happen
+
+
 def get_supabase_client() -> Client:
-    """Get Supabase client with service role key for storage operations."""
-    return create_client(
-        settings.SUPABASE_URL,
-        settings.SUPABASE_SERVICE_ROLE_KEY
-    )
+    """Create a Supabase client with service role key.
+
+    A **fresh** client is created on each call so it stays thread-safe
+    for parallel background uploads.
+    """
+    url = settings.SUPABASE_URL
+    if not url.endswith('/'):
+        url = url + '/'
+    return create_client(url, settings.SUPABASE_SERVICE_ROLE_KEY)
 
 
 def create_supabase_auth_user(email: str, password: str = None, user_metadata: dict = None) -> dict:

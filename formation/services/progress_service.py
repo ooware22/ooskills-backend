@@ -65,7 +65,7 @@ def autosave_progress(
 def _recalculate_enrollment_progress(enrollment: Enrollment):
     """Recompute the enrolment-wide progress percentage."""
     total_lessons = Lesson.objects.filter(
-        section__course=enrollment.course
+        module__section__course=enrollment.course
     ).count()
 
     if total_lessons == 0:

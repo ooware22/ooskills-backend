@@ -6,6 +6,8 @@ import json
 import logging
 
 from django.db import models as db_models
+from django.db import close_old_connections
+from django.db.utils import OperationalError, InterfaceError
 from django.db.models import Count, Sum, Prefetch
 from django.http import HttpResponse, JsonResponse, HttpRequest
 from django.views import View
@@ -23,7 +25,7 @@ from formation.models import (
     FinalQuiz, FinalQuizAttempt, FinalQuizAudio, GiftStatus,
     Lesson, LessonNote, LessonProgress, Order, OrderItem, OrderStatus,
     PaymentMethod, PromoCode, PromoCodeUsage,
-    QuizAttempt, Quiz, QuizQuestion, Section, ShareToken,
+    QuizAttempt, Quiz, QuizQuestion, Section, Module, ShareToken,
 )
 from formation.serializers import (
     CategorySerializer, CertificateSerializer,
@@ -40,7 +42,7 @@ from formation.serializers import (
     ProgressAutosaveSerializer,
     QuizAttemptSerializer, QuizSerializer, QuizSubmitSerializer,
     QuizQuestionSerializer,
-    SectionDetailSerializer, SectionSerializer,
+    SectionDetailSerializer, SectionSerializer, ModuleSerializer,
     ShareTokenCreateSerializer, ShareTokenSerializer,
 )
 from formation.permissions import IsAdminOrReadOnly, IsOwnerOrAdmin, IsEnrolledStudent
@@ -64,6 +66,51 @@ NOT_ENROLLED_MSG = 'Not enrolled in this course.'
 COURSE_NOT_FOUND_MSG = 'Course not found.'
 
 
+def _auto_enroll_order_user(order: Order) -> None:
+    """Idempotently enroll order owner into all courses in the order."""
+    courses = [item.course for item in order.items.select_related('course')]
+    for course in courses:
+        try:
+            enroll_user(order.user, course)
+        except AlreadyEnrolled:
+            pass
+
+
+def _checkout_is_paid(checkout_payload: dict) -> bool:
+    """Best-effort status detection across Chargily payload formats."""
+    paid_values = {'paid', 'succeeded', 'success', 'completed'}
+
+    candidates = [
+        checkout_payload.get('status'),
+        checkout_payload.get('payment_status'),
+        checkout_payload.get('checkout_status'),
+    ]
+
+    data = checkout_payload.get('data')
+    if isinstance(data, dict):
+        candidates.extend([
+            data.get('status'),
+            data.get('payment_status'),
+            data.get('checkout_status'),
+        ])
+
+    for value in candidates:
+        if isinstance(value, str) and value.strip().lower() in paid_values:
+            return True
+    return False
+
+
+class DBRetryReadMixin:
+    """Retry read operations once after resetting stale DB connections."""
+
+    def _run_with_db_retry(self, callback):
+        try:
+            return callback()
+        except (OperationalError, InterfaceError):
+            close_old_connections()
+            return callback()
+
+
 # ─── Category ────────────────────────────────────────────────────────────────
 
 @extend_schema_view(
@@ -83,7 +130,7 @@ class CategoryViewSet(viewsets.ModelViewSet):
     list=extend_schema(summary='List courses (catalog)'),
     retrieve=extend_schema(summary='Retrieve course detail'),
 )
-class CourseViewSet(viewsets.ModelViewSet):
+class CourseViewSet(DBRetryReadMixin, viewsets.ModelViewSet):
     permission_classes = [IsAdminOrReadOnly]
     lookup_field = 'slug'
     filter_backends = [DjangoFilterBackend, OrderingFilter]
@@ -92,20 +139,28 @@ class CourseViewSet(viewsets.ModelViewSet):
     ordering = ['-date']
 
     def get_queryset(self):
-        # Annotate sections with pre-computed lessons_count and total_duration
-        # to avoid N+1 queries from Section.lessons_count / total_duration properties
-        annotated_sections = Section.objects.annotate(
-            _lessons_count=Count('lessons'),
+        # Pre-annotate nested modules and sections to avoid N+1 queries
+        # in serializers when returning course content trees.
+        annotated_modules = Module.objects.annotate(
+            _lessons_count=Count('lessons', distinct=True),
             _total_duration_seconds=Sum('lessons__duration_seconds'),
-        ).prefetch_related('lessons', 'quiz__questions')
+        ).prefetch_related('lessons')
+
+        annotated_sections = Section.objects.annotate(
+            _modules_count=Count('modules', distinct=True),
+            _total_duration_seconds=Sum('modules__lessons__duration_seconds'),
+        ).prefetch_related(
+            Prefetch('modules', queryset=annotated_modules),
+            'quiz__questions',
+        )
 
         qs = Course.objects.select_related('category').prefetch_related(
             Prefetch('sections', queryset=annotated_sections),
             'materials',
         ).annotate(
             # Pre-compute totals used by CourseDetailSerializer
-            _total_modules=Count('sections', distinct=True),
-            _total_slides=Count('sections__lessons', distinct=True),
+            _total_modules=Count('sections__modules', distinct=True),
+            _total_slides=Count('sections__modules__lessons', distinct=True),
             _total_quiz_questions=Count(
                 'sections__quiz__questions', distinct=True,
             ),
@@ -121,6 +176,16 @@ class CourseViewSet(viewsets.ModelViewSet):
         if self.action in ('create', 'update', 'partial_update'):
             return CourseWriteSerializer
         return CourseListSerializer
+
+    def list(self, request, *args, **kwargs):
+        return self._run_with_db_retry(
+            lambda: super(CourseViewSet, self).list(request, *args, **kwargs)
+        )
+
+    def retrieve(self, request, *args, **kwargs):
+        return self._run_with_db_retry(
+            lambda: super(CourseViewSet, self).retrieve(request, *args, **kwargs)
+        )
 
     def destroy(self, request, *args, **kwargs):
         """Delete a course, handling ProtectedError from related OrderItems."""
@@ -180,6 +245,75 @@ class CourseViewSet(viewsets.ModelViewSet):
         ratings = CourseRating.objects.filter(course=course).select_related('user')
         return Response(CourseRatingSerializer(ratings, many=True).data)
 
+    @extend_schema(summary='Preview Course Zip (Admin)')
+    @action(detail=False, methods=['post'], url_path='import-zip-preview', permission_classes=[IsAdminOrReadOnly])
+    def import_zip_preview(self, request):
+        if not request.user.is_staff:
+            return Response({'detail': ADMIN_ONLY_MSG}, status=status.HTTP_403_FORBIDDEN)
+            
+        zip_file = request.FILES.get('zip_file')
+        if not zip_file:
+            return Response({'detail': 'No zip_file provided.'}, status=status.HTTP_400_BAD_REQUEST)
+            
+        import tempfile, os
+        from formation.services.zip_import_service import parse_zip_plan
+        
+        fd, temp_zip_path = tempfile.mkstemp(suffix='.zip', prefix='ooskills_up_')
+        try:
+            with os.fdopen(fd, 'wb') as f:
+                for chunk in zip_file.chunks():
+                    f.write(chunk)
+            plan = parse_zip_plan(temp_zip_path)
+        except Exception as e:
+            return Response({'detail': f'Error parsing zip: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
+        finally:
+            if temp_zip_path and os.path.exists(temp_zip_path):
+                os.remove(temp_zip_path)
+                
+        return Response(plan, status=status.HTTP_200_OK)
+
+    @extend_schema(summary='Confirm Import Course Zip (Admin)')
+    @action(detail=False, methods=['post'], url_path='import-zip', permission_classes=[IsAdminOrReadOnly])
+    def import_zip_confirm(self, request):
+        if not request.user.is_staff:
+            return Response({'detail': ADMIN_ONLY_MSG}, status=status.HTTP_403_FORBIDDEN)
+            
+        zip_file = request.FILES.get('zip_file')
+        category_id = request.data.get('category_id')
+        instructor_id = request.data.get('instructor_id')
+        
+        if not zip_file:
+            return Response({'detail': 'No zip_file provided.'}, status=status.HTTP_400_BAD_REQUEST)
+            
+        import tempfile, os
+        from formation.services.zip_import_service import import_course_from_zip
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+        
+        fd, temp_zip_path = tempfile.mkstemp(suffix='.zip', prefix='ooskills_up_')
+        
+        category = Category.objects.filter(id=category_id).first() if category_id else None
+        instructor = User.objects.filter(id=instructor_id).first() if instructor_id else None
+        
+        try:
+            with os.fdopen(fd, 'wb') as f:
+                for chunk in zip_file.chunks():
+                    f.write(chunk)
+            
+            # Do not keep one long transaction open across zip extraction/parsing.
+            # Long-running imports can hit DB/pool timeouts before all lesson inserts.
+            course = import_course_from_zip(temp_zip_path, category, instructor)
+                
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return Response({'detail': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        finally:
+            if temp_zip_path and os.path.exists(temp_zip_path):
+                os.remove(temp_zip_path)
+                
+        return Response(CourseDetailSerializer(course, context={'request': request}).data, status=status.HTTP_201_CREATED)
+
 
 # ─── Course Material ─────────────────────────────────────────────────────────
 
@@ -207,7 +341,7 @@ class CourseMaterialViewSet(viewsets.ModelViewSet):
     list=extend_schema(summary='List sections (optionally filter by course slug)'),
     retrieve=extend_schema(summary='Retrieve a section with lessons'),
 )
-class SectionViewSet(viewsets.ModelViewSet):
+class SectionViewSet(DBRetryReadMixin, viewsets.ModelViewSet):
     """
     Sections API.
 
@@ -217,26 +351,80 @@ class SectionViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAdminOrReadOnly]
 
     def get_queryset(self):
-        qs = Section.objects.select_related('course').prefetch_related(
-            'lessons', 'quiz__questions',
-        ).annotate(
-            _lessons_count=Count('lessons'),
+        annotated_modules = Module.objects.annotate(
+            _lessons_count=Count('lessons', distinct=True),
             _total_duration_seconds=Sum('lessons__duration_seconds'),
+        ).prefetch_related('lessons')
+
+        qs = Section.objects.select_related('course').prefetch_related(
+            Prefetch('modules', queryset=annotated_modules),
+            'quiz__questions',
+        ).annotate(
+            _modules_count=Count('modules', distinct=True),
+            _total_duration_seconds=Sum('modules__lessons__duration_seconds'),
         )
         course_slug = self.request.query_params.get('course')
         if course_slug:
             qs = qs.filter(course__slug=course_slug)
-        return qs
+        return qs.order_by('sequence')
 
     def get_serializer_class(self):
         if self.action == 'retrieve':
             return SectionDetailSerializer
         return SectionDetailSerializer
 
+    def list(self, request, *args, **kwargs):
+        return self._run_with_db_retry(
+            lambda: super(SectionViewSet, self).list(request, *args, **kwargs)
+        )
+
+    def retrieve(self, request, *args, **kwargs):
+        return self._run_with_db_retry(
+            lambda: super(SectionViewSet, self).retrieve(request, *args, **kwargs)
+        )
+
+
+# ─── Module ──────────────────────────────────────────────────────────────────
+
+@extend_schema_view(
+    list=extend_schema(summary='List modules (optionally filter by section)'),
+    retrieve=extend_schema(summary='Retrieve a module with lessons'),
+)
+class ModuleViewSet(DBRetryReadMixin, viewsets.ModelViewSet):
+    """
+    Modules API.
+
+    List: GET /api/formation/modules/?section=<section-id>
+    Detail: GET /api/formation/modules/<id>/
+    """
+    permission_classes = [IsAdminOrReadOnly]
+    serializer_class = ModuleSerializer
+
+    def get_queryset(self):
+        qs = Module.objects.select_related('section__course').prefetch_related(
+            'lessons',
+        ).annotate(
+            _lessons_count=Count('lessons'),
+            _total_duration_seconds=Sum('lessons__duration_seconds'),
+        )
+        section_id = self.request.query_params.get('section')
+        if section_id:
+            qs = qs.filter(section_id=section_id)
+        return qs.order_by('sequence')
+
+    def list(self, request, *args, **kwargs):
+        return self._run_with_db_retry(
+            lambda: super(ModuleViewSet, self).list(request, *args, **kwargs)
+        )
+
+    def retrieve(self, request, *args, **kwargs):
+        return self._run_with_db_retry(
+            lambda: super(ModuleViewSet, self).retrieve(request, *args, **kwargs)
+        )
 
 # ─── Lesson ──────────────────────────────────────────────────────────────────
 
-class LessonViewSet(viewsets.ModelViewSet):
+class LessonViewSet(DBRetryReadMixin, viewsets.ModelViewSet):
     """
     Lesson CRUD. Audio uploads via the audioUrl FileField go
     directly to Supabase Storage (audios/<course_id>/).
@@ -246,15 +434,25 @@ class LessonViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        qs = Lesson.objects.select_related('section__course')
+        qs = Lesson.objects.select_related('module__section__course')
         if not (user.is_authenticated and user.is_admin):
             if not user.is_authenticated:
                 return qs.none()
             enrolled_courses = Enrollment.objects.filter(
                 user=user
             ).values_list('course_id', flat=True)
-            qs = qs.filter(section__course_id__in=enrolled_courses)
+            qs = qs.filter(module__section__course_id__in=enrolled_courses)
         return qs
+
+    def list(self, request, *args, **kwargs):
+        return self._run_with_db_retry(
+            lambda: super(LessonViewSet, self).list(request, *args, **kwargs)
+        )
+
+    def retrieve(self, request, *args, **kwargs):
+        return self._run_with_db_retry(
+            lambda: super(LessonViewSet, self).retrieve(request, *args, **kwargs)
+        )
 
 # ─── Quiz ────────────────────────────────────────────────────────────────────
 
@@ -372,7 +570,7 @@ class LessonProgressViewSet(
 
         lesson_id = ser.validated_data['lesson_id']
         try:
-            lesson = Lesson.objects.select_related('section__course').get(id=lesson_id)
+            lesson = Lesson.objects.select_related('module__section__course').get(id=lesson_id)
         except Lesson.DoesNotExist:
             return Response(
                 {'detail': 'Lesson not found.'},
@@ -381,7 +579,7 @@ class LessonProgressViewSet(
 
         try:
             enrollment = Enrollment.objects.get(
-                user=request.user, course=lesson.section.course,
+                user=request.user, course=lesson.module.section.course,
             )
         except Enrollment.DoesNotExist:
             return Response(
@@ -419,7 +617,7 @@ class LessonNoteViewSet(viewsets.ModelViewSet):
         lesson = serializer.validated_data['lesson']
         enrollment = Enrollment.objects.get(
             user=self.request.user,
-            course=lesson.section.course,
+            course=lesson.module.section.course,
         )
         serializer.save(enrollment=enrollment)
 
@@ -585,6 +783,61 @@ class OrderViewSet(
         data = OrderSerializer(order).data
         data['checkout_url'] = checkout_url
         return Response(data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['post'], url_path='confirm-payment')
+    def confirm_payment(self, request, pk=None):
+        """
+        Confirm payment status for an order and auto-enroll as fallback.
+
+        Useful when the user lands on success page before webhook processing.
+        """
+        order = self.get_object()
+
+        if order.status == OrderStatus.PAID:
+            _auto_enroll_order_user(order)
+            return Response(OrderSerializer(order).data, status=status.HTTP_200_OK)
+
+        if not order.chargily_checkout_id:
+            return Response(
+                {'detail': 'Order has no checkout reference.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            checkout = chargily_client.retrieve_checkout(order.chargily_checkout_id)
+        except Exception as e:
+            logger.warning(f'Chargily checkout retrieve failed for order {order.id}: {e}')
+            return Response(
+                {'detail': 'Unable to verify payment at the moment. Please retry shortly.'},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        if _checkout_is_paid(checkout):
+            order.status = OrderStatus.PAID
+
+            payment_ref = ''
+            if isinstance(checkout, dict):
+                payment_ref = str(
+                    checkout.get('payment_id')
+                    or checkout.get('id')
+                    or ''
+                )
+            if payment_ref:
+                order.paymentRef = payment_ref
+                order.save(update_fields=['status', 'paymentRef', 'updated_at'])
+            else:
+                order.save(update_fields=['status', 'updated_at'])
+
+            _auto_enroll_order_user(order)
+            return Response(OrderSerializer(order).data, status=status.HTTP_200_OK)
+
+        return Response(
+            {
+                'detail': 'Payment not confirmed yet.',
+                'order_status': order.status,
+            },
+            status=status.HTTP_202_ACCEPTED,
+        )
 
 
 # ─── Final Quiz ─────────────────────────────────────────────────────────────────────
@@ -1125,13 +1378,7 @@ class ChargilyWebhookView(View):
             order.paymentRef = event.get('id', '')
             order.save(update_fields=['status', 'paymentRef', 'updated_at'])
 
-            # Auto-enroll the user in each course
-            courses = [item.course for item in order.items.select_related('course')]
-            for course in courses:
-                try:
-                    enroll_user(order.user, course)
-                except AlreadyEnrolled:
-                    pass
+            _auto_enroll_order_user(order)
 
             logger.info(f'Chargily webhook: order {order.id} marked as PAID')
 
@@ -1291,7 +1538,11 @@ class CourseGiftViewSet(viewsets.GenericViewSet):
         # Send email notification to recipient (non-blocking)
         import threading
         from formation.services.gift_email import send_gift_email
-        sender_name = request.user.get_full_name() or request.user.email
+        sender_name = (
+            getattr(request.user, 'full_name', None)
+            or getattr(request.user, 'display_name', None)
+            or request.user.email
+        )
         threading.Thread(
             target=send_gift_email,
             args=(recipient_email, sender_name, course.title, gift.gift_code, message),
@@ -1346,6 +1597,13 @@ class CourseGiftViewSet(viewsets.GenericViewSet):
         return Response(CourseGiftSerializer(gifts, many=True).data)
 
     @action(detail=False, methods=['get'], url_path='my-received')
+    def my_received(self, request):
+        """List gifts received by the current user."""
+        gifts = CourseGift.objects.filter(
+            db_models.Q(recipient_user=request.user) |
+            db_models.Q(recipient_email=request.user.email)
+        )
+        return Response(CourseGiftSerializer(gifts, many=True).data)
     def my_received(self, request):
         """List gifts received by the current user."""
         gifts = CourseGift.objects.filter(

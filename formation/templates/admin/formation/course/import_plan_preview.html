@@ -1,0 +1,56 @@
+{% extends "admin/base_site.html" %}
+{% load i18n admin_urls %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+<a href="{% url 'admin:index' %}">{% trans 'Home' %}</a>
+&rsaquo; <a href="{% url 'admin:app_list' app_label=opts.app_label %}">{{ opts.app_config.verbose_name }}</a>
+&rsaquo; <a href="{% url opts|admin_urlname:'changelist' %}">{{ opts.verbose_name_plural|capfirst }}</a>
+&rsaquo; Prévisualisation et Plan
+</div>
+{% endblock %}
+
+{% block content %}
+<div id="content-main">
+    <div class="module">
+        <h2>Plan de la formation à importer</h2>
+        
+        <div style="background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin-bottom: 20px;">
+            <h3>Détails du Manifest</h3>
+            <ul>
+                <li><strong>Titre :</strong> {{ plan.title }}</li>
+                <li><strong>Expert :</strong> {{ plan.expert }}</li>
+                <li><strong>Modules :</strong> {{ plan.sections_count }}</li>
+                <li><strong>Slides / Leçons :</strong> {{ plan.lessons_count }}</li>
+            </ul>
+        </div>
+        
+        <div style="background-color: #ffffff; padding: 15px; border: 1px solid #ddd; border-radius: 5px; margin-bottom: 20px;">
+            <h3>Structure du Contenu</h3>
+            <ul style="list-style-type: disc; margin-left: 20px;">
+                {% for section in plan.sections %}
+                <li style="margin-bottom: 10px;">
+                    <strong>{{ section.title }}</strong> 
+                    <span style="color: #666; font-size: 0.9em;">(Contient {{ section.lessons_count }} diapositives)</span>
+                </li>
+                {% endfor %}
+            </ul>
+            {% if not plan.sections %}
+            <p style="color: red;">Attention : Aucune structure de formation n'a été détectée dans le fichier JSON.</p>
+            {% endif %}
+        </div>
+        
+        <form action="{% url 'admin:course_import_zip_confirm' %}" method="post">
+            {% csrf_token %}
+            <input type="hidden" name="temp_zip_file" value="{{ temp_zip_file }}">
+            <input type="hidden" name="category_id" value="{{ category_id }}">
+            <input type="hidden" name="instructor_id" value="{{ instructor_id }}">
+            
+            <div class="submit-row">
+                <input type="submit" value="Confirmer et Créer la Formation" class="default" style="float: left;" name="_save">
+                <a href="{% url opts|admin_urlname:'changelist' %}" class="button cancel-link" style="padding: 10px 15px;">Annuler</a>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}

@@ -7,6 +7,7 @@ All translatable fields are returned as JSON objects:
 The frontend picks the right language based on user preference.
 """
 
+from django.db.models import Sum
 from rest_framework import serializers
 
 from formation.models import (
@@ -14,7 +15,7 @@ from formation.models import (
     Enrollment, FinalQuiz, FinalQuizAttempt, FinalQuizAudio,
     Lesson, LessonNote, LessonProgress, Order, OrderItem,
     PromoCode, PromoCodeUsage,
-    QuizAttempt, Quiz, QuizQuestion, Section, ShareToken,
+    QuizAttempt, Quiz, QuizQuestion, Section, Module, ShareToken,
 )
 
 
@@ -60,7 +61,7 @@ class LessonSerializer(serializers.ModelSerializer):
     class Meta:
         model = Lesson
         fields = [
-            'id', 'section', 'title', 'type', 'sequence',
+            'id', 'module', 'title', 'type', 'sequence',
             'duration_seconds', 'audioUrl', 'diapositiveUrl',
             'content', 'slide_type', 'display_mode',
         ]
@@ -89,7 +90,7 @@ class LessonListSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Lesson
-        fields = ['id', 'section', 'title', 'type', 'sequence', 'duration_seconds', 'slide_type', 'display_mode', 'diapositiveUrl']
+        fields = ['id', 'module', 'title', 'type', 'sequence', 'duration_seconds', 'slide_type', 'display_mode', 'diapositiveUrl', 'audioUrl']
 
 
 # ─── Course Material ─────────────────────────────────────────────────────────
@@ -104,34 +105,96 @@ class CourseMaterialSerializer(serializers.ModelSerializer):
         read_only_fields = ['download_url']
 
 
+# ─── Module ──────────────────────────────────────────────────────────────────
+
+class ModuleSerializer(serializers.ModelSerializer):
+    lessons_list = LessonSerializer(source='lessons', many=True, read_only=True)
+    lessons = serializers.SerializerMethodField()
+    duration = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Module
+        fields = [
+            'id', 'section', 'title', 'sequence', 'audioFileIndex',
+            'lessons', 'duration', 'lessons_list',
+        ]
+
+    def get_lessons(self, obj):
+        if hasattr(obj, '_lessons_count'):
+            return obj._lessons_count or 0
+        prefetched = getattr(obj, '_prefetched_objects_cache', {})
+        if 'lessons' in prefetched:
+            return len(prefetched['lessons'])
+        return obj.lessons.count()
+
+    def get_duration(self, obj):
+        if hasattr(obj, '_total_duration_seconds'):
+            total_seconds = obj._total_duration_seconds or 0
+        else:
+            prefetched = getattr(obj, '_prefetched_objects_cache', {})
+            if 'lessons' in prefetched:
+                total_seconds = sum((l.duration_seconds or 0) for l in prefetched['lessons'])
+            else:
+                total_seconds = obj.lessons.aggregate(total=Sum('duration_seconds'))['total'] or 0
+
+        hours = total_seconds / 3600
+        if hours >= 1:
+            return f'{hours:.1f}h'.replace('.0h', 'h')
+        minutes = total_seconds / 60
+        return f'{minutes:.0f}min'
+
 # ─── Section ─────────────────────────────────────────────────────────────────
 
 class SectionSerializer(serializers.ModelSerializer):
     """
-    Matches TS ``CourseModule`` for catalog view:
-    { title (i18n), lessons (count), duration (string) }
+    Matches TS CourseModule for catalog view:
+    { title (i18n), modules (count), duration (string) }
     """
-    lessons = serializers.IntegerField(source='lessons_count', read_only=True)
-    duration = serializers.CharField(source='total_duration', read_only=True)
+    modules_count = serializers.IntegerField(read_only=True)
+    duration = serializers.SerializerMethodField()
 
     class Meta:
         model = Section
-        fields = ['id', 'course', 'title', 'type', 'sequence', 'lessons', 'duration']
+        fields = ['id', 'course', 'title', 'type', 'sequence', 'modules_count', 'duration']
+
+    def get_duration(self, obj):
+        if hasattr(obj, '_total_duration_seconds'):
+            total_seconds = obj._total_duration_seconds or 0
+        else:
+            total_seconds = obj.modules.aggregate(total=Sum('lessons__duration_seconds'))['total'] or 0
+
+        hours = total_seconds / 3600
+        if hours >= 1:
+            return f'{hours:.1f}h'.replace('.0h', 'h')
+        minutes = total_seconds / 60
+        return f'{minutes:.0f}min'
 
 
 class SectionDetailSerializer(serializers.ModelSerializer):
-    """Section with nested lessons for course detail / player."""
-    lessons_list = LessonSerializer(source='lessons', many=True, read_only=True)
+    """Section with nested modules & quiz for course detail / player."""
+    modules_list = ModuleSerializer(source='modules', many=True, read_only=True)
     quiz = QuizSerializer(read_only=True)
-    lessons = serializers.IntegerField(source='lessons_count', read_only=True)
-    duration = serializers.CharField(source='total_duration', read_only=True)
+    modules_count = serializers.IntegerField(read_only=True)
+    duration = serializers.SerializerMethodField()
 
     class Meta:
         model = Section
         fields = [
-            'id', 'course', 'title', 'type', 'sequence', 'audioFileIndex',
-            'lessons', 'duration', 'lessons_list', 'quiz',
+            'id', 'course', 'title', 'type', 'sequence',
+            'modules_count', 'duration', 'modules_list', 'quiz',
         ]
+
+    def get_duration(self, obj):
+        if hasattr(obj, '_total_duration_seconds'):
+            total_seconds = obj._total_duration_seconds or 0
+        else:
+            total_seconds = obj.modules.aggregate(total=Sum('lessons__duration_seconds'))['total'] or 0
+
+        hours = total_seconds / 3600
+        if hours >= 1:
+            return f'{hours:.1f}h'.replace('.0h', 'h')
+        minutes = total_seconds / 60
+        return f'{minutes:.0f}min'
 
 
 # ─── Course ──────────────────────────────────────────────────────────────────
@@ -145,8 +208,9 @@ class CourseListSerializer(serializers.ModelSerializer):
     ``modules`` is the computed sections summary.
     """
     category = serializers.SlugRelatedField(slug_field='slug', read_only=True)
-    modules = SectionSerializer(source='sections', many=True, read_only=True)
+    sections = SectionSerializer(many=True, read_only=True)
     materials = CourseMaterialSerializer(many=True, read_only=True)
+    totalSlides = serializers.SerializerMethodField()
 
     class Meta:
         model = Course
@@ -154,15 +218,20 @@ class CourseListSerializer(serializers.ModelSerializer):
             'id', 'title', 'slug', 'category', 'level', 'duration',
             'rating', 'reviews', 'students', 'image', 'date',
             'price', 'originalPrice', 'discount', 'description',
-            'prerequisites', 'whatYouLearn', 'modules', 'materials',
-            'language', 'certificate', 'lastUpdated', 'status',
+            'prerequisites', 'whatYouLearn', 'sections', 'materials',
+            'language', 'certificate', 'lastUpdated', 'status', 'totalSlides',
         ]
+
+    def get_totalSlides(self, obj):
+        if hasattr(obj, '_total_slides'):
+            return obj._total_slides
+        return Lesson.objects.filter(module__section__course=obj).count()
 
 
 class CourseDetailSerializer(serializers.ModelSerializer):
     """Detailed course with full section/lesson/quiz data for the player."""
     category = serializers.SlugRelatedField(slug_field='slug', read_only=True)
-    modules = SectionDetailSerializer(source='sections', many=True, read_only=True)
+    sections = SectionDetailSerializer(many=True, read_only=True)
     materials = CourseMaterialSerializer(many=True, read_only=True)
     totalModules = serializers.SerializerMethodField()
     totalSlides = serializers.SerializerMethodField()
@@ -174,7 +243,7 @@ class CourseDetailSerializer(serializers.ModelSerializer):
             'id', 'title', 'slug', 'category', 'level', 'duration',
             'rating', 'reviews', 'students', 'image', 'date',
             'price', 'originalPrice', 'discount', 'description',
-            'prerequisites', 'whatYouLearn', 'modules', 'materials',
+            'prerequisites', 'whatYouLearn', 'sections', 'materials',
             'language', 'certificate', 'lastUpdated', 'status',
             'audioBasePath', 'totalModules', 'totalSlides', 'totalQuizQuestions',
         ]
@@ -187,7 +256,7 @@ class CourseDetailSerializer(serializers.ModelSerializer):
     def get_totalSlides(self, obj):
         if hasattr(obj, '_total_slides'):
             return obj._total_slides
-        return Lesson.objects.filter(section__course=obj).count()
+        return Lesson.objects.filter(module__section__course=obj).count()
 
     def get_totalQuizQuestions(self, obj):
         if hasattr(obj, '_total_quiz_questions'):

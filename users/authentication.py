@@ -10,13 +10,35 @@ This module provides:
 import jwt
 from jwt import PyJWKClient
 from django.conf import settings
+from django.db import close_old_connections
+from django.db.utils import OperationalError, InterfaceError
 from rest_framework import authentication, exceptions
+from rest_framework_simplejwt.authentication import JWTAuthentication
 from users.models import User
 
 
 # =============================================================================
 # SUPABASE JWT AUTHENTICATION
 # =============================================================================
+
+
+def _run_with_db_retry(callback):
+    """Retry one time after forcing stale DB connections to close."""
+    try:
+        return callback()
+    except (OperationalError, InterfaceError):
+        close_old_connections()
+        return callback()
+
+
+class ResilientJWTAuthentication(JWTAuthentication):
+    """JWT auth that retries transient DB disconnects once."""
+
+    def get_user(self, validated_token):
+        def _fetch_user():
+            return super(ResilientJWTAuthentication, self).get_user(validated_token)
+
+        return _run_with_db_retry(_fetch_user)
 
 class SupabaseJWTAuthentication(authentication.BaseAuthentication):
     """
@@ -139,12 +161,14 @@ class SupabaseJWTAuthentication(authentication.BaseAuthentication):
             'app_metadata': app_metadata,
         }
         
-        user, created = User.objects.get_or_create_from_supabase(supabase_data)
+        user, created = _run_with_db_retry(
+            lambda: User.objects.get_or_create_from_supabase(supabase_data)
+        )
         
         # Update last login
         from django.utils import timezone
         user.last_login = timezone.now()
-        user.save(update_fields=['last_login'])
+        _run_with_db_retry(lambda: user.save(update_fields=['last_login']))
         
         return user
     

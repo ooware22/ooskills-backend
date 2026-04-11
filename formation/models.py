@@ -234,14 +234,15 @@ class CourseMaterial(models.Model):
 # =============================================================================
 
 class SectionType(models.TextChoices):
-    TEASER = 'teaser', 'Teaser'
-    INTRODUCTION = 'introduction', 'Introduction'
-    MODULE = 'module', 'Module'
-    CONCLUSION = 'conclusion', 'Conclusion'
-
+    TEASER = 'TEASER', 'Teaser'
+    INTRO = 'INTRO', 'Introduction'
+    INIT = 'INIT', 'Initialisation'
+    APPRO = 'APPRO', 'Approfondissement'
+    CAS = 'CAS', 'Étude de cas'
+    CONCL = 'CONCL', 'Conclusion'
 
 class Section(models.Model):
-    """A section inside a course."""
+    """A top-level section (e.g. APPRO) inside a course."""
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     course = models.ForeignKey(
@@ -250,15 +251,11 @@ class Section(models.Model):
     title = models.CharField('Titre', max_length=300)
     type = models.CharField(
         max_length=20, choices=SectionType.choices,
-        default=SectionType.MODULE,
+        default=SectionType.APPRO,
     )
     sequence = models.PositiveIntegerField(
         default=0,
         help_text='Ordering weight inside the course',
-    )
-    audioFileIndex = models.PositiveIntegerField(
-        default=0,
-        help_text='Starting index in the audio files array',
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -272,10 +269,55 @@ class Section(models.Model):
     def __str__(self):
         return f'{self.course.title} — {self.title}'
 
-    # Computed properties used by serializer
-    # When accessed from CourseViewSet (which annotates _lessons_count and
-    # _total_duration_seconds), these use the pre-computed values — 0 extra queries.
-    # When accessed standalone, they fall back to per-object DB queries.
+    @property
+    def modules_count(self):
+        if hasattr(self, '_modules_count'):
+            return self._modules_count
+        return self.modules.count()
+
+    @property
+    def total_duration(self):
+        """Human-readable duration string based on child lessons inside modules."""
+        if hasattr(self, '_total_duration_seconds'):
+            total_seconds = self._total_duration_seconds or 0
+        else:
+            total_seconds = Lesson.objects.filter(module__section=self).aggregate(
+                total=models.Sum('duration_seconds')
+            )['total'] or 0
+        hours = total_seconds / 3600
+        if hours >= 1:
+            return f'{hours:.1f}h'.replace('.0h', 'h')
+        minutes = total_seconds / 60
+        return f'{minutes:.0f}min'
+
+
+class Module(models.Model):
+    """A module/chapter inside a section."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    section = models.ForeignKey(
+        Section, on_delete=models.CASCADE, related_name='modules',
+    )
+    title = models.CharField('Titre', max_length=300)
+    sequence = models.PositiveIntegerField(
+        default=0,
+        help_text='Ordering weight inside the section',
+    )
+    audioFileIndex = models.PositiveIntegerField(
+        default=0,
+        help_text='Starting index in the audio files array',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'Module'
+        verbose_name_plural = 'Modules'
+        ordering = ['sequence']
+        unique_together = [['section', 'sequence']]
+
+    def __str__(self):
+        return f'{self.section.course.title} — {self.section.title} — {self.title}'
 
     @property
     def lessons_count(self):
@@ -285,7 +327,6 @@ class Section(models.Model):
 
     @property
     def total_duration(self):
-        """Human-readable duration string based on child lessons."""
         if hasattr(self, '_total_duration_seconds'):
             total_seconds = self._total_duration_seconds or 0
         else:
@@ -297,7 +338,6 @@ class Section(models.Model):
             return f'{hours:.1f}h'.replace('.0h', 'h')
         minutes = total_seconds / 60
         return f'{minutes:.0f}min'
-
 
 # =============================================================================
 # LESSON
@@ -317,11 +357,11 @@ class DisplayMode(models.TextChoices):
 
 
 class Lesson(models.Model):
-    """A single lesson inside a section."""
+    """A single lesson inside a module."""
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    section = models.ForeignKey(
-        Section, on_delete=models.CASCADE, related_name='lessons',
+    module = models.ForeignKey(
+        Module, on_delete=models.CASCADE, related_name='lessons',
     )
     title = models.CharField('Titre', max_length=300)
     type = models.CharField(
@@ -365,7 +405,7 @@ class Lesson(models.Model):
         verbose_name = 'Leçon'
         verbose_name_plural = 'Leçons'
         ordering = ['sequence']
-        unique_together = [['section', 'sequence']]
+        unique_together = [['module', 'sequence']]
 
     def __str__(self):
         return self.title or UNTITLED_NAME
@@ -1144,4 +1184,20 @@ class CourseGift(models.Model):
         if self.expires_at and timezone.now() > self.expires_at:
             return False
         return True
+
+
+# =============================================================================
+# SIGNALS
+# =============================================================================
+from django.db.models.signals import post_delete
+from django.dispatch import receiver
+
+@receiver(post_delete, sender=Course)
+def cleanup_course_storage_on_delete(sender, instance, **kwargs):
+    """
+    When a Course is deleted, sweep all of its files from Supabase Storage
+    across all buckets (audios, images, Diapositive, materials).
+    """
+    from formation.storage import delete_course_storage_async
+    delete_course_storage_async(str(instance.id), instance.slug)
 

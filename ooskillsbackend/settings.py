@@ -114,8 +114,17 @@ DATABASES = {
         'PORT': os.environ.get('DB_PORT', '6543'),
         'OPTIONS': {
             'sslmode': 'require',
+            'connect_timeout': int(os.environ.get('DB_CONNECT_TIMEOUT', '10')),
+            'keepalives': 1,
+            'keepalives_idle': int(os.environ.get('DB_KEEPALIVES_IDLE', '30')),
+            'keepalives_interval': int(os.environ.get('DB_KEEPALIVES_INTERVAL', '10')),
+            'keepalives_count': int(os.environ.get('DB_KEEPALIVES_COUNT', '5')),
         },
-        'CONN_MAX_AGE': 600,  # Keep connections alive 10 min (avoid reconnect overhead)
+        # On managed poolers (e.g. pgbouncer/supabase), stale persistent
+        # connections frequently cause "server closed connection" / SSL EOF errors.
+        # Default to short-lived connections, overridable via env.
+        'CONN_MAX_AGE': int(os.environ.get('DB_CONN_MAX_AGE', '0')),
+        'CONN_HEALTH_CHECKS': True,
     }
 }
 
@@ -180,7 +189,7 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
-        'rest_framework_simplejwt.authentication.JWTAuthentication',  # Local JWT (primary)
+        'users.authentication.ResilientJWTAuthentication',  # Local JWT with DB retry
         'users.authentication.SupabaseJWTAuthentication',  # Supabase Auth (fallback)
         'rest_framework.authentication.SessionAuthentication',  # For browsable API
     ],

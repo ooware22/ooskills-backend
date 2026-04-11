@@ -11,33 +11,49 @@ responses return immediately without waiting for the Supabase upload.
 import logging
 import uuid
 import threading
+from urllib.parse import quote
+from django.conf import settings
 from django.core.files.storage import Storage
 from django.core.files.base import ContentFile
 from users.storage import get_supabase_client
 
 logger = logging.getLogger(__name__)
 
+# Global semaphore to prevent TCP/Pool exhaustion when batch-uploading courses without triggering ThreadPoolExecutor statreloader bugs
+import time
+SUPABASE_UPLOAD_SEMAPHORE = threading.Semaphore(3)
 
 # =============================================================================
 # HELPERS
 # =============================================================================
 
-def _upload_to_supabase(bucket_name, path, file_content, content_type):
+def _upload_to_supabase(bucket_name, path, file_content, content_type, retries=4):
     """Upload file bytes to Supabase Storage in a background thread."""
-    try:
-        supabase = get_supabase_client()
-        supabase.storage.from_(bucket_name).upload(
-            path=path,
-            file=file_content,
-            file_options={
-                'content-type': content_type,
-                'upsert': 'true',
-            },
-        )
-        logger.info("Supabase upload OK  bucket=%s path=%s", bucket_name, path)
-    except Exception:
-        logger.exception("Supabase upload FAILED  bucket=%s path=%s", bucket_name, path)
+    supabase = get_supabase_client()
+    for attempt in range(retries):
+        try:
+            supabase.storage.from_(bucket_name).upload(
+                path=path,
+                file=file_content,
+                file_options={
+                    'content-type': content_type,
+                    'upsert': 'true',
+                },
+            )
+            logger.info("Supabase upload OK  bucket=%s path=%s", bucket_name, path)
+            return
+        except Exception as e:
+            if attempt < retries - 1:
+                logger.warning("Supabase upload failed (attempt %d/%d) bucket=%s path=%s: %s", attempt+1, retries, bucket_name, path, e)
+                # Exponential backoff with small base to relieve network congestion
+                time.sleep(2 * (attempt + 1))
+            else:
+                logger.exception("Supabase upload FAILED completely after %d attempts! bucket=%s path=%s", retries, bucket_name, path)
 
+def _upload_to_supabase_with_semaphore(bucket_name, path, file_content, content_type):
+    """Wrapper to rate limit background threads."""
+    with SUPABASE_UPLOAD_SEMAPHORE:
+        _upload_to_supabase(bucket_name, path, file_content, content_type)
 
 def _delete_from_supabase(bucket_name, name):
     """Delete a file from Supabase Storage in a background thread."""
@@ -47,6 +63,49 @@ def _delete_from_supabase(bucket_name, name):
         logger.info("Supabase delete OK  bucket=%s path=%s", bucket_name, name)
     except Exception:
         logger.exception("Supabase delete FAILED  bucket=%s path=%s", bucket_name, name)
+
+def _delete_course_storage_from_supabase(course_id_str, course_slug):
+    """Deletes all storage files for a course across all buckets."""
+    try:
+        supabase = get_supabase_client()
+        
+        buckets_configs = [
+            ('audios', course_id_str),
+            ('materials', course_id_str),
+            ('Diapositive', course_id_str),
+            ('images', f"courses/{course_slug}")
+        ]
+
+        for bucket, folder_path in buckets_configs:
+            try:
+                res = supabase.storage.from_(bucket).list(folder_path)
+                if res and isinstance(res, list):
+                    files_to_delete = []
+                    for item in res:
+                        name = item.get('name')
+                        # Sometimes empty folders use a placeholder or simply we get subdirs
+                        if name and name not in ('.emptyFolderPlaceholder', ''):
+                            files_to_delete.append(f"{folder_path}/{name}")
+                    
+                    if files_to_delete:
+                        # Delete in chunks of 100 just in case there are too many
+                        chunk_size = 100
+                        for i in range(0, len(files_to_delete), chunk_size):
+                            chunk = files_to_delete[i:i + chunk_size]
+                            supabase.storage.from_(bucket).remove(chunk)
+                        logger.info("Deleted %d files from bucket %s in folder %s", len(files_to_delete), bucket, folder_path)
+            except Exception as e:
+                logger.warning("Failed to clean up storage for bucket %s folder %s: %s", bucket, folder_path, e)
+    except Exception as e:
+        logger.error("Failed to initialize supabase client for course storage deletion: %s", e)
+
+def delete_course_storage_async(course_id_str, course_slug):
+    """Trigger background deletion of a course's storage."""
+    threading.Thread(
+        target=_delete_course_storage_from_supabase,
+        args=(course_id_str, course_slug),
+        daemon=True
+    ).start()
 
 
 CONTENT_TYPE_JPEG = 'image/jpeg'
@@ -77,6 +136,21 @@ def _guess_content_type(name, type_map):
     return type_map.get(ext, 'application/octet-stream')
 
 
+def _public_object_url(bucket_name, name):
+    """Build Supabase public URL without creating SDK clients per field."""
+    if not name:
+        return ''
+    if name.startswith('http'):
+        return name
+
+    base_url = (settings.SUPABASE_URL or '').rstrip('/')
+    if not base_url:
+        return name
+
+    encoded_name = quote(name.lstrip('/'), safe='/')
+    return f"{base_url}/storage/v1/object/public/{bucket_name}/{encoded_name}"
+
+
 # =============================================================================
 # AUDIO STORAGE
 # =============================================================================
@@ -98,23 +172,17 @@ class SupabaseAudioStorage(Storage):
         file_content = content.read()
         content_type = _guess_content_type(name, AUDIO_CONTENT_TYPES)
 
-        thread = threading.Thread(
-            target=_upload_to_supabase,
+        threading.Thread(
+            target=_upload_to_supabase_with_semaphore,
             args=(self.bucket_name, name, file_content, content_type),
-            daemon=True,
-        )
-        thread.start()
+            daemon=True
+        ).start()
 
         return name
 
     def url(self, name):
         """Return the public URL for the file."""
-        if not name:
-            return ''
-        if name.startswith('http'):
-            return name
-        supabase = get_supabase_client()
-        return supabase.storage.from_(self.bucket_name).get_public_url(name)
+        return _public_object_url(self.bucket_name, name)
 
     def exists(self, name):
         """Supabase uses upsert, so always return False to allow overwrite."""
@@ -124,12 +192,11 @@ class SupabaseAudioStorage(Storage):
         """Delete a file from Supabase Storage (async)."""
         if not name or name.startswith('http'):
             return
-        thread = threading.Thread(
+        threading.Thread(
             target=_delete_from_supabase,
             args=(self.bucket_name, name),
-            daemon=True,
-        )
-        thread.start()
+            daemon=True
+        ).start()
 
     def size(self, name):
         return 0
@@ -144,13 +211,17 @@ def audio_upload_path(instance, filename):
 
     This keeps audio files organised by course in the Supabase bucket.
     """
-    # FinalQuiz has a direct `course` FK; Lesson goes through `section`.
+    # FinalQuiz has a direct `course` FK.
     # FinalQuizAudio goes through `final_quiz.course`.
+    # Lesson goes through `module.section.course`.
     if hasattr(instance, 'course_id') and instance.course_id:
         course_id = str(instance.course_id)
     elif hasattr(instance, 'final_quiz_id') and instance.final_quiz_id:
         course_id = str(instance.final_quiz.course_id)
+    elif hasattr(instance, 'module_id') and instance.module_id:
+        course_id = str(instance.module.section.course_id)
     else:
+        # Fallback: try legacy section path
         course_id = str(instance.section.course_id)
     ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else 'mp3'
     unique_name = f"{uuid.uuid4().hex}.{ext}"
@@ -178,23 +249,17 @@ class SupabaseImageStorage(Storage):
         file_content = content.read()
         content_type = _guess_content_type(name, IMAGE_CONTENT_TYPES)
 
-        thread = threading.Thread(
-            target=_upload_to_supabase,
+        threading.Thread(
+            target=_upload_to_supabase_with_semaphore,
             args=(self.bucket_name, name, file_content, content_type),
-            daemon=True,
-        )
-        thread.start()
+            daemon=True
+        ).start()
 
         return name
 
     def url(self, name):
         """Return the public URL for the file."""
-        if not name:
-            return ''
-        if name.startswith('http'):
-            return name
-        supabase = get_supabase_client()
-        return supabase.storage.from_(self.bucket_name).get_public_url(name)
+        return _public_object_url(self.bucket_name, name)
 
     def exists(self, name):
         """Supabase uses upsert, so always return False to allow overwrite."""
@@ -204,12 +269,11 @@ class SupabaseImageStorage(Storage):
         """Delete a file from Supabase Storage (async)."""
         if not name or name.startswith('http'):
             return
-        thread = threading.Thread(
+        threading.Thread(
             target=_delete_from_supabase,
             args=(self.bucket_name, name),
-            daemon=True,
-        )
-        thread.start()
+            daemon=True
+        ).start()
 
     def size(self, name):
         return 0
@@ -266,22 +330,16 @@ class SupabaseMaterialStorage(Storage):
         file_content = content.read()
         content_type = _guess_content_type(name, MATERIAL_CONTENT_TYPES)
 
-        thread = threading.Thread(
-            target=_upload_to_supabase,
+        threading.Thread(
+            target=_upload_to_supabase_with_semaphore,
             args=(self.bucket_name, name, file_content, content_type),
-            daemon=True,
-        )
-        thread.start()
+            daemon=True
+        ).start()
 
         return name
 
     def url(self, name):
-        if not name:
-            return ''
-        if name.startswith('http'):
-            return name
-        supabase = get_supabase_client()
-        return supabase.storage.from_(self.bucket_name).get_public_url(name)
+        return _public_object_url(self.bucket_name, name)
 
     def exists(self, name):
         return False
@@ -289,12 +347,11 @@ class SupabaseMaterialStorage(Storage):
     def delete(self, name):
         if not name or name.startswith('http'):
             return
-        thread = threading.Thread(
+        threading.Thread(
             target=_delete_from_supabase,
             args=(self.bucket_name, name),
-            daemon=True,
-        )
-        thread.start()
+            daemon=True
+        ).start()
 
     def size(self, name):
         return 0
@@ -348,22 +405,16 @@ class SupabaseDiapositiveStorage(Storage):
         file_content = content.read()
         content_type = _guess_content_type(name, DIAPOSITIVE_CONTENT_TYPES)
 
-        thread = threading.Thread(
-            target=_upload_to_supabase,
+        threading.Thread(
+            target=_upload_to_supabase_with_semaphore,
             args=(self.bucket_name, name, file_content, content_type),
-            daemon=True,
-        )
-        thread.start()
+            daemon=True
+        ).start()
 
         return name
 
     def url(self, name):
-        if not name:
-            return ''
-        if name.startswith('http'):
-            return name
-        supabase = get_supabase_client()
-        return supabase.storage.from_(self.bucket_name).get_public_url(name)
+        return _public_object_url(self.bucket_name, name)
 
     def exists(self, name):
         return False
@@ -371,12 +422,11 @@ class SupabaseDiapositiveStorage(Storage):
     def delete(self, name):
         if not name or name.startswith('http'):
             return
-        thread = threading.Thread(
+        threading.Thread(
             target=_delete_from_supabase,
             args=(self.bucket_name, name),
-            daemon=True,
-        )
-        thread.start()
+            daemon=True
+        ).start()
 
     def size(self, name):
         return 0
@@ -391,7 +441,13 @@ def diapositive_upload_path(instance, filename):
 
     Keeps diapositive files grouped by course ID in the Supabase 'Diapositive' bucket.
     """
-    course_id = str(instance.section.course_id)
+    # Lesson goes through module.section.course
+    if hasattr(instance, 'module_id') and instance.module_id:
+        course_id = str(instance.module.section.course_id)
+    elif hasattr(instance, 'section_id') and instance.section_id:
+        course_id = str(instance.section.course_id)
+    else:
+        course_id = str(instance.module.section.course_id)
     ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else 'pdf'
     unique_name = f"{uuid.uuid4().hex}.{ext}"
     return f"{course_id}/{unique_name}"

@@ -1,0 +1,44 @@
+{% extends "admin/base_site.html" %}
+{% load i18n admin_urls %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+<a href="{% url 'admin:index' %}">{% trans 'Home' %}</a>
+&rsaquo; <a href="{% url 'admin:app_list' app_label=opts.app_label %}">{{ opts.app_config.verbose_name }}</a>
+&rsaquo; <a href="{% url opts|admin_urlname:'changelist' %}">{{ opts.verbose_name_plural|capfirst }}</a>
+&rsaquo; Importer depuis ZIP
+</div>
+{% endblock %}
+
+{% block content %}
+<div id="content-main">
+    <form enctype="multipart/form-data" action="" method="post" id="course_form">
+        {% csrf_token %}
+        <div>
+            <fieldset class="module aligned">
+                <h2>Importation ZIP</h2>
+                <div class="description">
+                    <p>Sélectionnez un fichier ZIP contenant la structure de la formation. S'il contient <code>manifest.json</code> et <code>formation.json</code> avec les dossiers d'assets, ils seront lus. Vous serez ensuite redirigé vers une page confirmant le plan de la formation à importer.</p>
+                </div>
+
+                {% for field in form %}
+                <div class="form-row">
+                    <div>
+                        {{ field.label_tag }}
+                        {{ field }}
+                        {% if field.help_text %}
+                        <div class="help">{{ field.help_text|safe }}</div>
+                        {% endif %}
+                        {{ field.errors }}
+                    </div>
+                </div>
+                {% endfor %}
+            </fieldset>
+
+            <div class="submit-row">
+                <input type="submit" value="Scanner la structure et prévisualiser" class="default" name="_save">
+            </div>
+        </div>
+    </form>
+</div>
+{% endblock %}

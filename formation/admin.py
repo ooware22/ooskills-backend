@@ -8,7 +8,7 @@ from django.contrib import admin
 from formation.models import (
     Category, Certificate, Course, CourseMaterial, Enrollment,
     Lesson, LessonNote, LessonProgress, Order, OrderItem,
-    QuizAttempt, Quiz, QuizQuestion, Section, ShareToken,
+    QuizAttempt, Quiz, QuizQuestion, Section, Module, ShareToken,
 )
 
 
@@ -25,6 +25,13 @@ class CourseMaterialInline(admin.TabularInline):
     model = CourseMaterial
     extra = 0
     fields = ['name', 'type', 'size', 'file', 'url', 'sequence']
+    ordering = ['sequence']
+
+
+class ModuleInline(admin.TabularInline):
+    model = Module
+    extra = 0
+    fields = ['title', 'sequence', 'audioFileIndex']
     ordering = ['sequence']
 
 
@@ -83,20 +90,117 @@ class CourseAdmin(admin.ModelAdmin):
         }),
     )
 
+    def get_urls(self):
+        from django.urls import path
+        urls = super().get_urls()
+        custom_urls = [
+            path('import-zip/', self.admin_site.admin_view(self.import_zip_view), name='course_import_zip'),
+            path('import-zip/confirm/', self.admin_site.admin_view(self.import_zip_confirm_view), name='course_import_zip_confirm'),
+        ]
+        return custom_urls + urls
+
+    def import_zip_view(self, request):
+        from formation.forms import CourseImportZipForm
+        from formation.services.zip_import_service import parse_zip_plan
+        from django.shortcuts import render
+        import tempfile
+        import os
+        
+        if request.method == 'POST':
+            form = CourseImportZipForm(request.POST, request.FILES)
+            if form.is_valid():
+                zip_file = request.FILES['zip_file']
+                category = form.cleaned_data['category']
+                instructor = form.cleaned_data['instructor']
+                
+                # Save ZIP temporarily to pass its path to confirm view
+                fd, temp_zip_path = tempfile.mkstemp(suffix='.zip', prefix='ooskills_up_')
+                with os.fdopen(fd, 'wb') as f:
+                    for chunk in zip_file.chunks():
+                        f.write(chunk)
+                
+                plan = parse_zip_plan(temp_zip_path)
+                
+                context = dict(
+                    self.admin_site.each_context(request),
+                    title='Prévisualisation et Plan',
+                    plan=plan,
+                    temp_zip_file=temp_zip_path,
+                    category_id=category.id if category else '',
+                    instructor_id=instructor.id if instructor else '',
+                    opts=self.model._meta,
+                )
+                return render(request, "admin/formation/course/import_plan_preview.html", context)
+        else:
+            form = CourseImportZipForm()
+            
+        context = dict(
+            self.admin_site.each_context(request),
+            title='Importer une Formation (ZIP)',
+            form=form,
+            opts=self.model._meta,
+        )
+        return render(request, "admin/formation/course/import_zip.html", context)
+        
+    def import_zip_confirm_view(self, request):
+        from formation.services.zip_import_service import import_course_from_zip
+        from formation.models import Category
+        from django.contrib.auth import get_user_model
+        from django.contrib import messages
+        from django.shortcuts import redirect
+        from django.urls import reverse
+        from django.db import transaction
+        import os
+        
+        if request.method == 'POST':
+            temp_zip_path = request.POST.get('temp_zip_file')
+            category_id = request.POST.get('category_id')
+            instructor_id = request.POST.get('instructor_id')
+            
+            if temp_zip_path and os.path.exists(temp_zip_path):
+                category = Category.objects.filter(id=category_id).first() if category_id else None
+                User = get_user_model()
+                instructor = User.objects.filter(id=instructor_id).first() if instructor_id else None
+                
+                try:
+                    with transaction.atomic():
+                        import_course_from_zip(temp_zip_path, category, instructor)
+                    messages.success(request, "La formation a été importée avec succès !")
+                except Exception as e:
+                    messages.error(request, f"Erreur lors de l'importation: {e}")
+                finally:
+                    try:
+                        os.remove(temp_zip_path)
+                    except:
+                        pass
+            else:
+                messages.error(request, "Fichier zip temporaire introuvable ou invalide.")
+                
+            return redirect(reverse('admin:formation_course_changelist'))
+            
+        return redirect(reverse('admin:formation_course_changelist'))
+
 
 @admin.register(Section)
 class SectionAdmin(admin.ModelAdmin):
-    list_display = ['course', 'type', 'sequence']
+    list_display = ['title', 'course', 'type', 'sequence']
     list_filter = ['type']
     raw_id_fields = ['course']
+    inlines = [ModuleInline]
+
+
+@admin.register(Module)
+class ModuleAdmin(admin.ModelAdmin):
+    list_display = ['title', 'section', 'sequence']
+    raw_id_fields = ['section']
     inlines = [LessonInline]
 
 
 @admin.register(Lesson)
 class LessonAdmin(admin.ModelAdmin):
-    list_display = ['section', 'type', 'sequence', 'duration_seconds']
+    list_display = ['title', 'module', 'type', 'sequence', 'duration_seconds']
     list_filter = ['type']
-    raw_id_fields = ['section']
+    raw_id_fields = ['module']
 
 
 @admin.register(CourseMaterial)

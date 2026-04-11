@@ -1,0 +1,1 @@
+import os; import django; os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'ooskillsbackend.settings'); django.setup(); from django.db import connection; cursor = connection.cursor(); cursor.execute('TRUNCATE TABLE formation_course CASCADE;'); cursor.execute('TRUNCATE TABLE formation_enrollment CASCADE;'); cursor.execute('TRUNCATE TABLE formation_order CASCADE;'); print('Wiped');
