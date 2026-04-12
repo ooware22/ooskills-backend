@@ -4,6 +4,7 @@ Formation Views — DRF ViewSets for all formation endpoints.
 
 import json
 import logging
+from uuid import UUID
 
 from django.db import models as db_models
 from django.db import close_old_connections
@@ -345,7 +346,7 @@ class SectionViewSet(DBRetryReadMixin, viewsets.ModelViewSet):
     """
     Sections API.
 
-    List: GET /api/formation/sections/?course=<course-slug>
+    List: GET /api/formation/sections/?course=<course-slug-or-id>
     Detail: GET /api/formation/sections/<id>/
     """
     permission_classes = [IsAdminOrReadOnly]
@@ -363,9 +364,14 @@ class SectionViewSet(DBRetryReadMixin, viewsets.ModelViewSet):
             _modules_count=Count('modules', distinct=True),
             _total_duration_seconds=Sum('modules__lessons__duration_seconds'),
         )
-        course_slug = self.request.query_params.get('course')
-        if course_slug:
-            qs = qs.filter(course__slug=course_slug)
+        course_ref = self.request.query_params.get('course')
+        if course_ref:
+            try:
+                course_uuid = UUID(str(course_ref))
+            except (TypeError, ValueError):
+                qs = qs.filter(course__slug=course_ref)
+            else:
+                qs = qs.filter(course_id=course_uuid)
         return qs.order_by('sequence')
 
     def get_serializer_class(self):
@@ -1597,13 +1603,6 @@ class CourseGiftViewSet(viewsets.GenericViewSet):
         return Response(CourseGiftSerializer(gifts, many=True).data)
 
     @action(detail=False, methods=['get'], url_path='my-received')
-    def my_received(self, request):
-        """List gifts received by the current user."""
-        gifts = CourseGift.objects.filter(
-            db_models.Q(recipient_user=request.user) |
-            db_models.Q(recipient_email=request.user.email)
-        )
-        return Response(CourseGiftSerializer(gifts, many=True).data)
     def my_received(self, request):
         """List gifts received by the current user."""
         gifts = CourseGift.objects.filter(
