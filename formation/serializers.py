@@ -494,6 +494,10 @@ class OrderCreateSerializer(serializers.Serializer):
     course_ids = serializers.ListField(child=serializers.UUIDField())
     paymentMethod = serializers.CharField(max_length=30)
     paymentRef = serializers.CharField(max_length=200, required=False, default='')
+    # Optional promo code to apply at checkout
+    promo_code = serializers.CharField(max_length=50, required=False, allow_blank=True, default='')
+    # Whether to use the user's referral wallet balance
+    use_wallet = serializers.BooleanField(required=False, default=False)
 
 
 # ─── Certificate ─────────────────────────────────────────────────────────────

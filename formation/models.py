@@ -164,9 +164,19 @@ class Course(models.Model):
 
     def save(self, *args, **kwargs):
         if not self.slug:
-            self.slug = slugify(self.title) or str(self.id)[:8]
-        # Auto-compute price from originalPrice and discount
-        if self.originalPrice and self.discount is not None:
+            base = slugify(self.title) or f'course-{str(self.id)[:8]}'
+            # Ensure uniqueness: if base slug exists, append -2, -3, etc.
+            slug = base
+            counter = 2
+            while Course.objects.filter(slug=slug).exclude(pk=self.pk).exists():
+                slug = f'{base}-{counter}'
+                counter += 1
+            self.slug = slug
+        # Auto-compute price from originalPrice and discount only as fallback
+        # (when price is not explicitly provided by the frontend).
+        # The frontend sends the computed price directly to support both
+        # percentage and fixed-DA discount types.
+        if self.originalPrice and self.discount is not None and not self.price:
             self.price = round(self.originalPrice * (1 - self.discount / 100))
         super().save(*args, **kwargs)
 

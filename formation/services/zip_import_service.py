@@ -5,15 +5,17 @@ import tempfile
 import shutil
 import threading
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from django.core.files import File
 from django.db import connection, close_old_connections
 from django.db.utils import OperationalError, InterfaceError
 from formation.models import (
     Course, Section, Module, Lesson, SectionType, LessonType, DisplayMode, CourseStatus,
-    Quiz, QuizQuestion, FinalQuiz,
+    Quiz, QuizQuestion, FinalQuiz, QuestionType, QuestionDifficulty,
 )
 
 logger = logging.getLogger(__name__)
+BULK_CREATE_BATCH_SIZE = 200
 
 
 def _save_with_db_retry(instance, update_fields=None, retries=1):
@@ -30,29 +32,152 @@ def _save_with_db_retry(instance, update_fields=None, retries=1):
                 raise
             close_old_connections()
 
-def _upload_files_background(temp_dir, should_cleanup, lesson_file_mappings):
+
+def _bulk_create_with_db_retry(model_cls, instances, batch_size=BULK_CREATE_BATCH_SIZE, retries=1):
+    """Retry bulk_create once after refreshing stale DB connections."""
+    if not instances:
+        return instances
+
+    for attempt in range(retries + 1):
+        try:
+            model_cls.objects.bulk_create(instances, batch_size=batch_size)
+            return instances
+        except (OperationalError, InterfaceError):
+            if attempt >= retries:
+                raise
+            close_old_connections()
+
+def _upload_single_file(lesson_id, field_name, file_path, file_display_name):
     """
-    Background worker to upload audio and slides to Supabase/S3.
+    Upload a single file (audio or slide) to Supabase Storage for a lesson.
+
+    The flow is:
+      1. Read file from disk (+ compress images)
+      2. Upload to Supabase Storage via the Django FileField (fires background HTTP)
+      3. Save the lesson row — uses a fresh DB connection to avoid pool exhaustion
+      4. Immediately close the DB connection so the pooler slot is freed
+
+    Returns (lesson_id, field_name, success_bool).
     """
     from formation.models import Lesson
+    from formation.storage import compress_image_bytes
+    import io
+    import time
+
+    MAX_DB_RETRIES = 3
+
     try:
-        for mapping in lesson_file_mappings:
+        with open(file_path, 'rb') as f:
+            file_bytes = f.read()
+
+        # Compress slide images before uploading (saves bandwidth + storage)
+        if field_name == 'diapositiveUrl':
+            file_bytes, file_display_name, _ = compress_image_bytes(
+                file_bytes, file_display_name
+            )
+
+        # Build an in-memory Django File
+        buf = io.BytesIO(file_bytes)
+        buf.name = file_display_name
+        django_file = File(buf)
+
+        # DB save with retry — each attempt gets a fresh connection
+        for attempt in range(MAX_DB_RETRIES):
             try:
-                lesson = Lesson.objects.get(id=mapping['lesson_id'])
-                if mapping['audio_path'] and os.path.exists(mapping['audio_path']):
-                    with open(mapping['audio_path'], 'rb') as af:
-                        lesson.audioUrl.save(mapping['audio_name'], File(af), save=False)
-                if mapping['bg_path'] and os.path.exists(mapping['bg_path']):
-                    with open(mapping['bg_path'], 'rb') as sf:
-                        lesson.diapositiveUrl.save(mapping['bg_name'], File(sf), save=False)
-                _save_with_db_retry(lesson, update_fields=['audioUrl', 'diapositiveUrl'])
-            except Exception as e:
-                logger.error(f"Error uploading files for lesson {mapping['lesson_id']}: {e}")
+                close_old_connections()
+                lesson = Lesson.objects.get(id=lesson_id)
+                getattr(lesson, field_name).save(file_display_name, django_file, save=False)
+                lesson.save(update_fields=[field_name])
+                break  # success
+            except (OperationalError, InterfaceError) as db_err:
+                connection.close()
+                if attempt >= MAX_DB_RETRIES - 1:
+                    raise db_err
+                wait = 3 * (attempt + 1)
+                logger.warning(
+                    "DB save retry %d/%d for lesson %s field %s (waiting %ds): %s",
+                    attempt + 1, MAX_DB_RETRIES, lesson_id, field_name, wait, db_err,
+                )
+                time.sleep(wait)
+        else:
+            raise RuntimeError("DB save exhausted retries")
+
+        return (lesson_id, field_name, True)
+
+    except Exception as e:
+        logger.error("Upload failed for lesson %s field %s: %s", lesson_id, field_name, e)
+        return (lesson_id, field_name, False)
     finally:
-        # Cleanup
+        # Always release the DB connection back to the pool immediately
+        try:
+            connection.close()
+        except Exception:
+            pass
+
+
+def _upload_files_background(temp_dir, should_cleanup, lesson_file_mappings):
+    """
+    Background worker to upload audio and slides to Supabase Storage.
+
+    Uses only 2 concurrent workers to stay within the Supabase free-tier
+    connection pooler limit (~10 connections).  Each worker releases its
+    DB connection immediately after saving.
+    """
+    MAX_WORKERS = 2
+    try:
+        close_old_connections()
+
+        # Build list of (lesson_id, field_name, file_path, display_name) tasks
+        upload_tasks = []
+        for mapping in lesson_file_mappings:
+            lesson_id = mapping.get('lesson_id')
+            if not lesson_id:
+                continue
+            if mapping['audio_path'] and os.path.exists(mapping['audio_path']):
+                upload_tasks.append(
+                    (lesson_id, 'audioUrl', mapping['audio_path'], mapping['audio_name'])
+                )
+            if mapping['bg_path'] and os.path.exists(mapping['bg_path']):
+                upload_tasks.append(
+                    (lesson_id, 'diapositiveUrl', mapping['bg_path'], mapping['bg_name'])
+                )
+
+        if not upload_tasks:
+            logger.info("No files to upload from ZIP import")
+            return
+
+        total = len(upload_tasks)
+        logger.info("ZIP import: starting %d file uploads with %d workers", total, MAX_WORKERS)
+
+        done_count = 0
+        fail_count = 0
+
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            futures = {
+                executor.submit(_upload_single_file, *task): task
+                for task in upload_tasks
+            }
+            for future in as_completed(futures):
+                lesson_id, field_name, success = future.result()
+                done_count += 1
+                if not success:
+                    fail_count += 1
+                # Log progress every 5 files
+                if done_count % 5 == 0 or done_count == total:
+                    logger.info(
+                        "ZIP import upload progress: %d/%d done (%d failed)",
+                        done_count, total, fail_count,
+                    )
+
+        logger.info(
+            "ZIP import: all uploads complete — %d/%d succeeded",
+            total - fail_count, total,
+        )
+    finally:
+        # Cleanup temp directory
         if should_cleanup and temp_dir and os.path.exists(temp_dir):
             shutil.rmtree(temp_dir, ignore_errors=True)
-        # Close db connection used by thread
+        # Close db connection used by this thread
         connection.close()
 
 def normalize_formation(formation):
@@ -227,39 +352,24 @@ def parse_narration_to_script(narration_text):
     return {"mode": "multi_speaker", "speakers": speakers}
 
 
-def _create_quiz_question(quiz_or_final, q, q_idx, is_final=False):
-    """
-    Parse a quiz question (list or dict format) and create a QuizQuestion.
-    
-    Supports both Quiz (section-level) and FinalQuiz (course-level).
-    For FinalQuiz, questions are stored as QuizQuestion on a temporary Quiz
-    linked to the course, since FinalQuiz randomly pulls from section quizzes.
-    
-    List format: [type, question_text, options, correct_answer, metadata, difficulty]
-    Dict format: {question, options/choices, correct_answer, explanation}
-    """
-    from formation.models import QuizQuestion, QuestionType, QuestionDifficulty
-
-    # ── Parse question data ──
+def _parse_quiz_question_payload(q, q_idx):
+    """Parse raw question payload into QuizQuestion model fields."""
     q_type = QuestionType.MULTIPLE_CHOICE
     difficulty = QuestionDifficulty.EASY
 
     if isinstance(q, list):
-        # Array format: [type_str, text, options, answer, meta_dict, difficulty_str]
         type_str = q[0] if len(q) > 0 else 'mc'
-        ques_text = q[1] if len(q) > 1 else f"Question {q_idx+1}"
+        ques_text = q[1] if len(q) > 1 else f"Question {q_idx + 1}"
         options = q[2] if len(q) > 2 else ["A", "B"]
         ans = q[3] if len(q) > 3 else 0
         meta = q[4] if len(q) > 4 else {}
         diff_str = q[5] if len(q) > 5 else 'easy'
 
-        # Convert options dict to list (for match-type questions)
         if isinstance(options, dict):
             options = list(options.values())
         if isinstance(options, bool):
             options = ["Vrai", "Faux"]
 
-        # Build explanation from metadata
         if isinstance(meta, dict):
             parts = []
             if meta.get('why'):
@@ -272,7 +382,6 @@ def _create_quiz_question(quiz_or_final, q, q_idx, is_final=False):
         else:
             explanation = str(meta) if meta else ''
 
-        # Map type string
         type_map = {
             'mc': QuestionType.MULTIPLE_CHOICE,
             'tf': QuestionType.TRUE_FALSE,
@@ -285,7 +394,6 @@ def _create_quiz_question(quiz_or_final, q, q_idx, is_final=False):
         }
         q_type = type_map.get(type_str, QuestionType.MULTIPLE_CHOICE)
 
-        # Map difficulty
         diff_map = {
             'easy': QuestionDifficulty.EASY,
             'medium': QuestionDifficulty.MEDIUM,
@@ -295,7 +403,7 @@ def _create_quiz_question(quiz_or_final, q, q_idx, is_final=False):
         difficulty = diff_map.get(diff_str, QuestionDifficulty.EASY)
 
     elif isinstance(q, dict):
-        ques_text = q.get('question', f"Question {q_idx+1}")
+        ques_text = q.get('question', f"Question {q_idx + 1}")
         options = q.get('options') or q.get('choices') or [
             q.get('option1'), q.get('option2'), q.get('option3'), q.get('option4')
         ]
@@ -303,37 +411,49 @@ def _create_quiz_question(quiz_or_final, q, q_idx, is_final=False):
         ans = q.get('correct_answer', 0)
         explanation = q.get('explanation', '')
     else:
-        return  # Skip unrecognized format
+        return None
 
-    # Normalize answer
     if isinstance(ans, str) and ans.isdigit():
         ans = int(ans)
     if isinstance(ans, bool):
         ans = 0 if ans else 1
 
-    # Ensure options is a valid list
     if not isinstance(options, list):
         options = ["A", "B"]
 
+    return {
+        'question': ques_text,
+        'type': q_type,
+        'options': options or ["A", "B"],
+        'correct_answer': ans if isinstance(ans, int) else 0,
+        'explanation': explanation,
+        'difficulty': difficulty,
+        'sequence': q_idx + 1,
+    }
+
+
+def _create_quiz_question(quiz_or_final, q, q_idx, is_final=False):
+    """Create one quiz question (kept for compatibility with existing callers)."""
     if is_final:
-        # For FinalQuiz, we still create QuizQuestion entries but linked
-        # to a section quiz. The FinalQuiz model pulls randomly from them.
-        # We create them on the quiz passed as quiz_or_final (which is a FinalQuiz).
-        # Since FinalQuiz doesn't have a direct questions relation,
-        # we skip individual question creation - they're stored in section quizzes
-        # and pulled randomly at quiz time.
         return
-    
-    QuizQuestion.objects.create(
-        quiz=quiz_or_final,
-        question=ques_text,
-        type=q_type,
-        options=options or ["A", "B"],
-        correct_answer=ans if isinstance(ans, int) else 0,
-        explanation=explanation,
-        difficulty=difficulty,
-        sequence=q_idx + 1,
-    )
+
+    payload = _parse_quiz_question_payload(q, q_idx)
+    if not payload:
+        return
+
+    QuizQuestion.objects.create(quiz=quiz_or_final, **payload)
+
+
+def _create_quiz_questions_bulk(quiz, questions_data):
+    """Create many quiz questions with a single bulk insert."""
+    question_rows = []
+    for q_idx, q in enumerate(questions_data):
+        payload = _parse_quiz_question_payload(q, q_idx)
+        if payload:
+            question_rows.append(QuizQuestion(quiz=quiz, **payload))
+
+    _bulk_create_with_db_retry(QuizQuestion, question_rows, batch_size=BULK_CREATE_BATCH_SIZE)
+    return len(question_rows)
 
 
 def parse_zip_plan(zip_file_path):
@@ -367,8 +487,7 @@ def parse_zip_plan(zip_file_path):
         if formation_file:
             with z.open(formation_file) as f:
                 formation = json.load(f)
-                plan['formation'] = formation
-                
+
                 # Normalize formation depending on schema
                 formation = normalize_formation(formation)
 
@@ -402,7 +521,7 @@ def parse_zip_plan(zip_file_path):
     return plan
 
 
-def import_course_from_zip(zip_file_path, category, instructor, temp_dir=None):
+def import_course_from_zip(zip_file_path, category=None, instructor=None, temp_dir=None):
     """
     Extracts the ZIP file, creates Course, Sections, and Lessons, 
     and uploads audio and slides to Supabase Storage.
@@ -466,19 +585,16 @@ def import_course_from_zip(zip_file_path, category, instructor, temp_dir=None):
                     fq_data = module_data.get('final_quiz_data', {})
                     fq_questions = fq_data.get('questions', [])
                     if fq_questions:
-                        final_quiz = FinalQuiz.objects.create(
+                        FinalQuiz.objects.create(
                             course=course,
                             title=fq_data.get('title', 'Examen Final'),
                             num_questions=fq_data.get('num_questions', len(fq_questions)),
                             pass_threshold=fq_data.get('pass_threshold', 70),
                         )
-                        for q_idx, q in enumerate(fq_questions):
-                            _create_quiz_question(final_quiz, q, q_idx, is_final=True)
                         logger.info(f"Created FinalQuiz with {len(fq_questions)} questions")
                     continue
 
                 # ── Create Section for content levels ────────────────────
-                is_quiz = module_data.get('is_quiz', False)
                 section_seq += 1
                 
                 # Try to map level_name to SectionType, fallback to APPRO
@@ -515,6 +631,9 @@ def import_course_from_zip(zip_file_path, category, instructor, temp_dir=None):
                     )
 
                     slides = m_data.get('slides', [])
+                    lessons_to_create = []
+                    pending_lesson_files = []
+
                     for slide_idx, slide_data in enumerate(slides):
                         lesson_title = slide_data.get('title', f"{mod_title} - Slide {slide_idx+1}")
 
@@ -533,7 +652,7 @@ def import_course_from_zip(zip_file_path, category, instructor, temp_dir=None):
                         if 'visuals' in slide_data and 'visual_content' not in slide_data:
                             slide_data['visual_content'] = slide_data['visuals']
 
-                        lesson = Lesson(
+                        lessons_to_create.append(Lesson(
                             module=module_obj,
                             title=lesson_title[:300],
                             type=LessonType.SLIDE,
@@ -542,7 +661,7 @@ def import_course_from_zip(zip_file_path, category, instructor, temp_dir=None):
                             slide_type=slide_type_val,
                             display_mode=display_mode_val,
                             content=slide_data,
-                        )
+                        ))
 
                         audio_filename = slide_data.get('audio')
                         slide_bg = slide_data.get('bg')
@@ -567,15 +686,43 @@ def import_course_from_zip(zip_file_path, category, instructor, temp_dir=None):
                             if os.path.exists(bp):
                                 bg_path_final = bp
 
-                        _save_with_db_retry(lesson)
+                        pending_lesson_files.append({
+                            'audio_path': audio_path_final,
+                            'audio_name': os.path.basename(audio_filename) if audio_filename else None,
+                            'bg_path': bg_path_final,
+                            'bg_name': os.path.basename(slide_bg) if slide_bg else None,
+                        })
 
-                        if audio_path_final or bg_path_final:
+                    _bulk_create_with_db_retry(
+                        Lesson,
+                        lessons_to_create,
+                        batch_size=BULK_CREATE_BATCH_SIZE,
+                    )
+
+                    # Some DB backends may not return PKs for bulk_create rows.
+                    if any(lesson.id is None for lesson in lessons_to_create):
+                        by_sequence = Lesson.objects.filter(
+                            module=module_obj,
+                            sequence__in=[lesson.sequence for lesson in lessons_to_create],
+                        ).only('id', 'sequence').in_bulk(field_name='sequence')
+                        for lesson in lessons_to_create:
+                            existing = by_sequence.get(lesson.sequence)
+                            if existing:
+                                lesson.id = existing.id
+
+                    for lesson, pending in zip(lessons_to_create, pending_lesson_files):
+                        if not lesson.id:
+                            logger.warning(
+                                f"Skipping file mapping for lesson '{lesson.title}' in module '{module_obj.id}' because PK was not resolved"
+                            )
+                            continue
+                        if pending['audio_path'] or pending['bg_path']:
                             lesson_file_mappings.append({
                                 'lesson_id': lesson.id,
-                                'audio_path': audio_path_final,
-                                'audio_name': os.path.basename(audio_filename) if audio_filename else None,
-                                'bg_path': bg_path_final,
-                                'bg_name': os.path.basename(slide_bg) if slide_bg else None,
+                                'audio_path': pending['audio_path'],
+                                'audio_name': pending['audio_name'],
+                                'bg_path': pending['bg_path'],
+                                'bg_name': pending['bg_name'],
                             })
 
                 # ── Attach section quiz if questions exist ────────────────
@@ -588,28 +735,29 @@ def import_course_from_zip(zip_file_path, category, instructor, temp_dir=None):
                         title=quiz_title,
                         pass_threshold=quiz_threshold
                     )
-                    for q_idx, q in enumerate(questions_data):
-                        _create_quiz_question(quiz, q, q_idx, is_final=False)
-                    logger.info(f"Attached quiz '{quiz_title}' ({len(questions_data)} questions) to section '{level_name}'")
+                    created_questions = _create_quiz_questions_bulk(quiz, questions_data)
+                    logger.info(
+                        f"Attached quiz '{quiz_title}' ({created_questions} questions) to section '{level_name}'"
+                    )
                     
-        # Start background thread to upload files
-        thread = threading.Thread(
-            target=_upload_files_background,
-            args=(temp_dir, should_cleanup, lesson_file_mappings)
-        )
-        thread.start()
+        if lesson_file_mappings:
+            _start_upload_thread(temp_dir, should_cleanup, lesson_file_mappings)
+        elif should_cleanup and os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
         return course
         
-    except Exception as e:
+    except Exception:
         if should_cleanup and os.path.exists(temp_dir):
             shutil.rmtree(temp_dir, ignore_errors=True)
-        raise e
+        raise
 
 
 def _start_upload_thread(temp_dir, should_cleanup, lesson_file_mappings):
     thread = threading.Thread(
         target=_upload_files_background,
         args=(temp_dir, should_cleanup, lesson_file_mappings),
+        name='zip-import-upload-worker',
     )
     thread.daemon = True
     thread.start()

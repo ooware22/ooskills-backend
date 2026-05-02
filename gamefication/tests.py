@@ -321,6 +321,18 @@ class LeaderboardTests(GamificationTestBase):
         entries = list(get_leaderboard(LeaderboardPeriod.WEEKLY))
         self.assertGreaterEqual(len(entries), 1)
 
+    def test_refresh_leaderboard_is_idempotent_for_period(self):
+        """Refreshing the same period multiple times should not duplicate rows."""
+        award_xp(self.user, 200, XPSourceType.BONUS, 'ref-1')
+        award_xp(self.user2, 100, XPSourceType.BONUS, 'ref-2')
+
+        refresh_leaderboard(LeaderboardPeriod.ALLTIME)
+        refresh_leaderboard(LeaderboardPeriod.ALLTIME)
+
+        entries = list(get_leaderboard(LeaderboardPeriod.ALLTIME))
+        user_period_pairs = {(e.user_id, e.period) for e in entries}
+        self.assertEqual(len(entries), len(user_period_pairs))
+
 
 # ═════════════════════════════════════════════════════════════════════════════
 # 7. XP PROFILE API TESTS

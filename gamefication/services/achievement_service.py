@@ -53,6 +53,19 @@ def check_achievements(user) -> list[dict]:
                 if created:
                     # Award achievement XP (without re-triggering achievement check)
                     _award_achievement_xp(user, defn)
+                    # Push in-app notification
+                    try:
+                        from users.models import Notification, NotificationType
+                        title_fr = defn.title
+                        if isinstance(title_fr, dict):
+                            title_fr = title_fr.get('fr') or title_fr.get('en') or defn.key
+                        Notification.push(
+                            user, NotificationType.ACHIEVEMENT_UNLOCKED,
+                            f"Badge débloqué : {title_fr}",
+                            link='/dashboard/achievements',
+                        )
+                    except Exception:
+                        pass
                     newly_unlocked.append({
                         'key': defn.key,
                         'title': defn.title,

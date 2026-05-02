@@ -13,7 +13,7 @@ from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from django.contrib.auth import authenticate
 from django.contrib.auth.password_validation import validate_password
-from .models import User, UserRole, UserStatus, ReferralCode, Referral, ALGERIAN_WILAYAS
+from .models import User, UserRole, UserStatus, ReferralCode, Referral, ALGERIAN_WILAYAS, AccountDeletionRequest, DeletionRequestStatus, Notification
 from .storage import upload_avatar, delete_avatar, create_supabase_auth_user
 from .email import send_verification_email
 
@@ -216,17 +216,26 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
         if referral_code_str:
             try:
                 ref_code = ReferralCode.objects.get(code=referral_code_str, is_active=True)
-                # Reward per referral (in DZD)
-                REFERRAL_REWARD = 200
+                # Rewards (in DZD)
+                REFERRER_REWARD = 200   # Reward for the person who shared the code
+                REFERRED_REWARD = 100   # Welcome bonus for the new user
                 Referral.objects.create(
                     referrer=ref_code.user,
                     referred=user,
                     referral_code=ref_code,
-                    reward_amount=REFERRAL_REWARD,
+                    reward_amount=REFERRER_REWARD,
                 )
                 ref_code.uses_count += 1
-                ref_code.reward_earned += REFERRAL_REWARD
+                ref_code.reward_earned += REFERRER_REWARD
                 ref_code.save(update_fields=['uses_count', 'reward_earned'])
+                
+                # Credit referrer's balance
+                ref_code.user.referral_balance += REFERRER_REWARD
+                ref_code.user.save(update_fields=['referral_balance', 'updated_at'])
+                
+                # Credit referred user's welcome bonus
+                user.referral_balance += REFERRED_REWARD
+                user.save(update_fields=['referral_balance', 'updated_at'])
             except ReferralCode.DoesNotExist:
                 pass
         
@@ -287,11 +296,11 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'role', 'status', 'email_verified',
             'language', 'newsletter_subscribed',
             'date_joined', 'last_login',
-            'referral_code'
+            'referral_code', 'referral_balance'
         ]
         read_only_fields = [
             'id', 'email', 'role', 'status', 'email_verified',
-            'date_joined', 'last_login'
+            'date_joined', 'last_login', 'referral_balance'
         ]
     
     def get_referral_code(self, obj):
@@ -432,7 +441,7 @@ class AdminUserSerializer(serializers.ModelSerializer):
             'phone', 'wilaya', 'wilaya_name',
             'avatar', 'avatar_url', 'avatar_display_url',
             'role', 'status', 'is_staff', 'is_active',
-            'language', 'newsletter_subscribed',
+            'language', 'newsletter_subscribed', 'referral_balance',
             'date_joined', 'last_login', 'updated_at'
         ]
         read_only_fields = ['id', 'supabase_id', 'date_joined', 'last_login', 'updated_at']
@@ -653,3 +662,75 @@ class WilayaSerializer(serializers.Serializer):
     @classmethod
     def get_all_wilayas(cls):
         return [{'code': code, 'name': name} for code, name in ALGERIAN_WILAYAS]
+
+
+# =============================================================================
+# ACCOUNT DELETION REQUEST SERIALIZERS
+# =============================================================================
+
+class AccountDeletionRequestSerializer(serializers.ModelSerializer):
+    """Serializer for user to submit/view a deletion request."""
+    
+    user_email = serializers.EmailField(source='user.email', read_only=True)
+    user_full_name = serializers.CharField(source='user.full_name', read_only=True)
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    
+    class Meta:
+        model = AccountDeletionRequest
+        fields = [
+            'id', 'user', 'user_email', 'user_full_name',
+            'reason', 'status', 'status_display',
+            'admin_notes', 'reviewed_at',
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = [
+            'id', 'user', 'status', 'admin_notes',
+            'reviewed_at', 'created_at', 'updated_at'
+        ]
+
+
+class AdminDeletionRequestSerializer(serializers.ModelSerializer):
+    """Full serializer for admin to list/view deletion requests."""
+    
+    user_email = serializers.EmailField(source='user.email', read_only=True)
+    user_full_name = serializers.CharField(source='user.full_name', read_only=True)
+    user_avatar = serializers.CharField(source='user.avatar_display_url', read_only=True)
+    user_role = serializers.CharField(source='user.role', read_only=True)
+    user_date_joined = serializers.DateTimeField(source='user.date_joined', read_only=True)
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    reviewed_by_email = serializers.EmailField(source='reviewed_by.email', read_only=True, default=None)
+    
+    class Meta:
+        model = AccountDeletionRequest
+        fields = [
+            'id', 'user', 'user_email', 'user_full_name',
+            'user_avatar', 'user_role', 'user_date_joined',
+            'reason', 'status', 'status_display',
+            'admin_notes', 'reviewed_by', 'reviewed_by_email',
+            'reviewed_at', 'created_at', 'updated_at'
+        ]
+        read_only_fields = fields
+
+
+class AdminDeletionRequestUpdateSerializer(serializers.Serializer):
+    """Serializer for admin to approve/reject a deletion request."""
+    
+    admin_notes = serializers.CharField(required=False, allow_blank=True, default='')
+
+
+class ConfirmAccountDeletionSerializer(serializers.Serializer):
+    """Serializer for user to confirm account deletion with password."""
+    
+    password = serializers.CharField(required=True, style={'input_type': 'password'})
+
+
+# =============================================================================
+# NOTIFICATION SERIALIZERS
+# =============================================================================
+
+class NotificationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Notification
+        fields = ['id', 'type', 'title', 'body', 'link', 'is_read', 'created_at']
+        read_only_fields = ['id', 'type', 'title', 'body', 'link', 'created_at']
+

@@ -1,110 +1,190 @@
 """
-Supabase Storage backend for formation module.
+Cloudflare R2 Storage backend for formation module.
 
-Provides a Django Storage backend that uploads files to Supabase Storage,
-so FileField / ImageField work seamlessly with Supabase.
+Provides a Django Storage backend that uploads files to Cloudflare R2 (S3-compatible),
+so FileField / ImageField work seamlessly with R2.
 
 Uploads are performed asynchronously in background threads so that API
-responses return immediately without waiting for the Supabase upload.
+responses return immediately without waiting for the R2 upload.
 """
 
+import io
 import logging
 import uuid
+import time
 import threading
 from urllib.parse import quote
 from django.conf import settings
 from django.core.files.storage import Storage
 from django.core.files.base import ContentFile
-from users.storage import get_supabase_client
+import boto3
+from botocore.config import Config
 
 logger = logging.getLogger(__name__)
 
-# Global semaphore to prevent TCP/Pool exhaustion when batch-uploading courses without triggering ThreadPoolExecutor statreloader bugs
-import time
-SUPABASE_UPLOAD_SEMAPHORE = threading.Semaphore(3)
+# Global semaphore — limit concurrent uploads to avoid overwhelming R2.
+R2_UPLOAD_SEMAPHORE = threading.Semaphore(8)
+
+# Thread-local storage for reusing boto3 clients within a thread.
+_thread_local = threading.local()
+
+
+def _get_r2_client():
+    """Return a boto3 S3 client configured for Cloudflare R2, cached per-thread."""
+    client = getattr(_thread_local, 'r2_client', None)
+    if client is None:
+        client = boto3.client(
+            's3',
+            endpoint_url=settings.R2_ENDPOINT_URL,
+            aws_access_key_id=settings.R2_ACCESS_KEY_ID,
+            aws_secret_access_key=settings.R2_SECRET_ACCESS_KEY,
+            config=Config(signature_version='s3v4'),
+            region_name='auto',
+        )
+        _thread_local.r2_client = client
+    return client
+
+
+# Maximum image dimension (pixels) before we downscale during import.
+IMPORT_IMAGE_MAX_DIM = 1920
+# JPEG/WebP quality for compressed slides.
+IMPORT_IMAGE_QUALITY = 82
+
+
+def compress_image_bytes(file_bytes, filename, max_dim=IMPORT_IMAGE_MAX_DIM, quality=IMPORT_IMAGE_QUALITY):
+    """
+    Compress an image if it is larger than *max_dim* pixels on any side.
+
+    Returns (compressed_bytes, new_filename, content_type).
+    Falls back to the original bytes if Pillow is not available or the
+    image cannot be decoded.
+    """
+    try:
+        from PIL import Image
+    except ImportError:
+        # Pillow not installed — return as-is
+        ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
+        ct = IMAGE_CONTENT_TYPES.get(ext, 'application/octet-stream')
+        return file_bytes, filename, ct
+
+    try:
+        img = Image.open(io.BytesIO(file_bytes))
+    except Exception:
+        ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
+        ct = IMAGE_CONTENT_TYPES.get(ext, 'application/octet-stream')
+        return file_bytes, filename, ct
+
+    w, h = img.size
+    resized = False
+    if max(w, h) > max_dim:
+        img.thumbnail((max_dim, max_dim), Image.LANCZOS)
+        resized = True
+
+    # Convert to RGB if necessary (handles RGBA PNGs)
+    if img.mode in ('RGBA', 'P'):
+        img = img.convert('RGB')
+
+    # Save as WebP for best size/quality ratio
+    buf = io.BytesIO()
+    img.save(buf, format='WEBP', quality=quality, method=4)
+    compressed = buf.getvalue()
+
+    # Only use compressed version if it is actually smaller
+    if len(compressed) < len(file_bytes) or resized:
+        new_name = filename.rsplit('.', 1)[0] + '.webp'
+        logger.info(
+            "Image compressed %s → %s  (%d KB → %d KB)",
+            filename, new_name,
+            len(file_bytes) // 1024, len(compressed) // 1024,
+        )
+        return compressed, new_name, 'image/webp'
+
+    ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
+    ct = IMAGE_CONTENT_TYPES.get(ext, 'application/octet-stream')
+    return file_bytes, filename, ct
 
 # =============================================================================
 # HELPERS
 # =============================================================================
 
-def _upload_to_supabase(bucket_name, path, file_content, content_type, retries=4):
-    """Upload file bytes to Supabase Storage in a background thread."""
-    supabase = get_supabase_client()
+def _upload_to_r2(bucket_name, path, file_content, content_type, retries=4):
+    """Upload file bytes to Cloudflare R2, reusing a per-thread boto3 client."""
+    client = _get_r2_client()
     for attempt in range(retries):
         try:
-            supabase.storage.from_(bucket_name).upload(
-                path=path,
-                file=file_content,
-                file_options={
-                    'content-type': content_type,
-                    'upsert': 'true',
-                },
+            client.put_object(
+                Bucket=bucket_name,
+                Key=path,
+                Body=file_content,
+                ContentType=content_type,
             )
-            logger.info("Supabase upload OK  bucket=%s path=%s", bucket_name, path)
+            logger.info('R2 upload OK  bucket=%s path=%s (%d KB)', bucket_name, path, len(file_content) // 1024)
             return
         except Exception as e:
             if attempt < retries - 1:
-                logger.warning("Supabase upload failed (attempt %d/%d) bucket=%s path=%s: %s", attempt+1, retries, bucket_name, path, e)
-                # Exponential backoff with small base to relieve network congestion
+                logger.warning('R2 upload failed (attempt %d/%d) bucket=%s path=%s: %s', attempt + 1, retries, bucket_name, path, e)
                 time.sleep(2 * (attempt + 1))
             else:
-                logger.exception("Supabase upload FAILED completely after %d attempts! bucket=%s path=%s", retries, bucket_name, path)
+                logger.exception('R2 upload FAILED completely after %d attempts! bucket=%s path=%s', retries, bucket_name, path)
 
-def _upload_to_supabase_with_semaphore(bucket_name, path, file_content, content_type):
-    """Wrapper to rate limit background threads."""
-    with SUPABASE_UPLOAD_SEMAPHORE:
-        _upload_to_supabase(bucket_name, path, file_content, content_type)
 
-def _delete_from_supabase(bucket_name, name):
-    """Delete a file from Supabase Storage in a background thread."""
+def _upload_to_r2_with_semaphore(bucket_name, path, file_content, content_type):
+    """Wrapper to rate-limit background R2 upload threads."""
+    with R2_UPLOAD_SEMAPHORE:
+        _upload_to_r2(bucket_name, path, file_content, content_type)
+
+
+def _delete_from_r2(bucket_name, name):
+    """Delete a file from Cloudflare R2 in a background thread."""
     try:
-        supabase = get_supabase_client()
-        supabase.storage.from_(bucket_name).remove([name])
-        logger.info("Supabase delete OK  bucket=%s path=%s", bucket_name, name)
+        client = _get_r2_client()
+        client.delete_object(Bucket=bucket_name, Key=name)
+        logger.info('R2 delete OK  bucket=%s path=%s', bucket_name, name)
     except Exception:
-        logger.exception("Supabase delete FAILED  bucket=%s path=%s", bucket_name, name)
+        logger.exception('R2 delete FAILED  bucket=%s path=%s', bucket_name, name)
 
-def _delete_course_storage_from_supabase(course_id_str, course_slug):
-    """Deletes all storage files for a course across all buckets."""
+
+def _delete_course_storage_from_r2(course_id_str, course_slug):
+    """Delete all R2 objects for a course across all relevant buckets."""
     try:
-        supabase = get_supabase_client()
-        
-        buckets_configs = [
-            ('audios', course_id_str),
-            ('materials', course_id_str),
-            ('Diapositive', course_id_str),
-            ('images', f"courses/{course_slug}")
+        client = _get_r2_client()
+
+        buckets_prefixes = [
+            ('audios',      course_id_str),
+            ('materials',   course_id_str),
+            ('diapositive', course_id_str),
+            ('images',      f'courses/{course_slug}'),
         ]
 
-        for bucket, folder_path in buckets_configs:
+        for bucket, prefix in buckets_prefixes:
             try:
-                res = supabase.storage.from_(bucket).list(folder_path)
-                if res and isinstance(res, list):
-                    files_to_delete = []
-                    for item in res:
-                        name = item.get('name')
-                        # Sometimes empty folders use a placeholder or simply we get subdirs
-                        if name and name not in ('.emptyFolderPlaceholder', ''):
-                            files_to_delete.append(f"{folder_path}/{name}")
-                    
-                    if files_to_delete:
-                        # Delete in chunks of 100 just in case there are too many
-                        chunk_size = 100
-                        for i in range(0, len(files_to_delete), chunk_size):
-                            chunk = files_to_delete[i:i + chunk_size]
-                            supabase.storage.from_(bucket).remove(chunk)
-                        logger.info("Deleted %d files from bucket %s in folder %s", len(files_to_delete), bucket, folder_path)
+                paginator = client.get_paginator('list_objects_v2')
+                keys_to_delete = []
+                for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+                    for obj in page.get('Contents', []):
+                        keys_to_delete.append({'Key': obj['Key']})
+
+                if keys_to_delete:
+                    # R2 supports up to 1000 keys per delete_objects call
+                    chunk_size = 1000
+                    for i in range(0, len(keys_to_delete), chunk_size):
+                        client.delete_objects(
+                            Bucket=bucket,
+                            Delete={'Objects': keys_to_delete[i:i + chunk_size]},
+                        )
+                    logger.info('Deleted %d objects from R2 bucket=%s prefix=%s', len(keys_to_delete), bucket, prefix)
             except Exception as e:
-                logger.warning("Failed to clean up storage for bucket %s folder %s: %s", bucket, folder_path, e)
+                logger.warning('Failed to clean R2 bucket=%s prefix=%s: %s', bucket, prefix, e)
     except Exception as e:
-        logger.error("Failed to initialize supabase client for course storage deletion: %s", e)
+        logger.error('R2 course storage deletion failed: %s', e)
+
 
 def delete_course_storage_async(course_id_str, course_slug):
-    """Trigger background deletion of a course's storage."""
+    """Trigger background deletion of a course's R2 storage."""
     threading.Thread(
-        target=_delete_course_storage_from_supabase,
+        target=_delete_course_storage_from_r2,
         args=(course_id_str, course_slug),
-        daemon=True
+        daemon=True,
     ).start()
 
 
@@ -137,18 +217,18 @@ def _guess_content_type(name, type_map):
 
 
 def _public_object_url(bucket_name, name):
-    """Build Supabase public URL without creating SDK clients per field."""
+    """Build the public URL for an R2 object using the per-bucket base URL from settings."""
     if not name:
         return ''
     if name.startswith('http'):
         return name
 
-    base_url = (settings.SUPABASE_URL or '').rstrip('/')
+    base_url = (settings.R2_PUBLIC_URLS.get(bucket_name) or '').rstrip('/')
     if not base_url:
         return name
 
     encoded_name = quote(name.lstrip('/'), safe='/')
-    return f"{base_url}/storage/v1/object/public/{bucket_name}/{encoded_name}"
+    return f"{base_url}/{encoded_name}"
 
 
 # =============================================================================
@@ -157,45 +237,38 @@ def _public_object_url(bucket_name, name):
 
 class SupabaseAudioStorage(Storage):
     """
-    Django Storage backend that stores files in the Supabase 'audios' bucket.
+    Django Storage backend that stores audio files in Cloudflare R2 'audios' bucket.
     Uploads happen asynchronously so the API returns immediately.
     """
 
     bucket_name = 'audios'
 
     def deconstruct(self):
-        """Allow Django to serialize this storage in migrations."""
         return ('formation.storage.SupabaseAudioStorage', [], {})
 
     def _save(self, name, content):
-        """Read file bytes, fire off background upload, return path immediately."""
         file_content = content.read()
         content_type = _guess_content_type(name, AUDIO_CONTENT_TYPES)
-
         threading.Thread(
-            target=_upload_to_supabase_with_semaphore,
+            target=_upload_to_r2_with_semaphore,
             args=(self.bucket_name, name, file_content, content_type),
-            daemon=True
+            daemon=True,
         ).start()
-
         return name
 
     def url(self, name):
-        """Return the public URL for the file."""
         return _public_object_url(self.bucket_name, name)
 
     def exists(self, name):
-        """Supabase uses upsert, so always return False to allow overwrite."""
         return False
 
     def delete(self, name):
-        """Delete a file from Supabase Storage (async)."""
         if not name or name.startswith('http'):
             return
         threading.Thread(
-            target=_delete_from_supabase,
+            target=_delete_from_r2,
             args=(self.bucket_name, name),
-            daemon=True
+            daemon=True,
         ).start()
 
     def size(self, name):
@@ -234,14 +307,13 @@ def audio_upload_path(instance, filename):
 
 class SupabaseImageStorage(Storage):
     """
-    Django Storage backend that stores files in the Supabase 'images' bucket.
+    Django Storage backend that stores images in Cloudflare R2 'images' bucket.
     Uploads happen asynchronously so the API returns immediately.
     """
 
     bucket_name = 'images'
 
     def deconstruct(self):
-        """Allow Django to serialize this storage in migrations."""
         return ('formation.storage.SupabaseImageStorage', [], {})
 
     def _save(self, name, content):
@@ -250,29 +322,26 @@ class SupabaseImageStorage(Storage):
         content_type = _guess_content_type(name, IMAGE_CONTENT_TYPES)
 
         threading.Thread(
-            target=_upload_to_supabase_with_semaphore,
+            target=_upload_to_r2_with_semaphore,
             args=(self.bucket_name, name, file_content, content_type),
-            daemon=True
+            daemon=True,
         ).start()
 
         return name
 
     def url(self, name):
-        """Return the public URL for the file."""
         return _public_object_url(self.bucket_name, name)
 
     def exists(self, name):
-        """Supabase uses upsert, so always return False to allow overwrite."""
         return False
 
     def delete(self, name):
-        """Delete a file from Supabase Storage (async)."""
         if not name or name.startswith('http'):
             return
         threading.Thread(
-            target=_delete_from_supabase,
+            target=_delete_from_r2,
             args=(self.bucket_name, name),
-            daemon=True
+            daemon=True,
         ).start()
 
     def size(self, name):
@@ -317,7 +386,7 @@ MATERIAL_CONTENT_TYPES = {
 
 class SupabaseMaterialStorage(Storage):
     """
-    Django Storage backend that stores files in the Supabase 'materials' bucket.
+    Django Storage backend that stores files in Cloudflare R2 'materials' bucket.
     Files are grouped by course_id: materials/<course_id>/<uuid>.<ext>
     """
 
@@ -331,9 +400,9 @@ class SupabaseMaterialStorage(Storage):
         content_type = _guess_content_type(name, MATERIAL_CONTENT_TYPES)
 
         threading.Thread(
-            target=_upload_to_supabase_with_semaphore,
+            target=_upload_to_r2_with_semaphore,
             args=(self.bucket_name, name, file_content, content_type),
-            daemon=True
+            daemon=True,
         ).start()
 
         return name
@@ -348,9 +417,9 @@ class SupabaseMaterialStorage(Storage):
         if not name or name.startswith('http'):
             return
         threading.Thread(
-            target=_delete_from_supabase,
+            target=_delete_from_r2,
             args=(self.bucket_name, name),
-            daemon=True
+            daemon=True,
         ).start()
 
     def size(self, name):
@@ -392,11 +461,11 @@ DIAPOSITIVE_CONTENT_TYPES = {
 
 class SupabaseDiapositiveStorage(Storage):
     """
-    Django Storage backend that stores files in the Supabase 'Diapositive' bucket.
+    Django Storage backend that stores files in Cloudflare R2 'diapositive' bucket.
     Files are grouped by course_id: <course_id>/<uuid>.<ext>
     """
 
-    bucket_name = 'Diapositive'
+    bucket_name = 'diapositive'
 
     def deconstruct(self):
         return ('formation.storage.SupabaseDiapositiveStorage', [], {})
@@ -406,9 +475,9 @@ class SupabaseDiapositiveStorage(Storage):
         content_type = _guess_content_type(name, DIAPOSITIVE_CONTENT_TYPES)
 
         threading.Thread(
-            target=_upload_to_supabase_with_semaphore,
+            target=_upload_to_r2_with_semaphore,
             args=(self.bucket_name, name, file_content, content_type),
-            daemon=True
+            daemon=True,
         ).start()
 
         return name
@@ -423,9 +492,9 @@ class SupabaseDiapositiveStorage(Storage):
         if not name or name.startswith('http'):
             return
         threading.Thread(
-            target=_delete_from_supabase,
+            target=_delete_from_r2,
             args=(self.bucket_name, name),
-            daemon=True
+            daemon=True,
         ).start()
 
     def size(self, name):

@@ -149,7 +149,6 @@ class CourseAdmin(admin.ModelAdmin):
         from django.contrib import messages
         from django.shortcuts import redirect
         from django.urls import reverse
-        from django.db import transaction
         import os
         
         if request.method == 'POST':
@@ -163,8 +162,7 @@ class CourseAdmin(admin.ModelAdmin):
                 instructor = User.objects.filter(id=instructor_id).first() if instructor_id else None
                 
                 try:
-                    with transaction.atomic():
-                        import_course_from_zip(temp_zip_path, category, instructor)
+                    import_course_from_zip(temp_zip_path, category, instructor)
                     messages.success(request, "La formation a été importée avec succès !")
                 except Exception as e:
                     messages.error(request, f"Erreur lors de l'importation: {e}")

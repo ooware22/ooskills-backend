@@ -1,12 +1,15 @@
 """
-Supabase Storage Utility for OOSkills Platform
+Storage Utility for OOSkills Platform
 
-Provides functions for uploading and managing files in Supabase Storage.
+Supabase Auth helpers (create/delete auth users) remain here.
+File storage (avatars) now uses Cloudflare R2 via boto3.
 """
 
 import uuid
 from django.conf import settings
 from supabase import create_client, Client
+import boto3
+from botocore.config import Config
 
 
 
@@ -44,15 +47,23 @@ except Exception:
 
 
 def get_supabase_client() -> Client:
-    """Create a Supabase client with service role key.
-
-    A **fresh** client is created on each call so it stays thread-safe
-    for parallel background uploads.
-    """
+    """Create a Supabase client with service role key (used for Auth only)."""
     url = settings.SUPABASE_URL
     if not url.endswith('/'):
         url = url + '/'
     return create_client(url, settings.SUPABASE_SERVICE_ROLE_KEY)
+
+
+def _get_r2_client():
+    """Return a boto3 S3 client configured for Cloudflare R2."""
+    return boto3.client(
+        's3',
+        endpoint_url=settings.R2_ENDPOINT_URL,
+        aws_access_key_id=settings.R2_ACCESS_KEY_ID,
+        aws_secret_access_key=settings.R2_SECRET_ACCESS_KEY,
+        config=Config(signature_version='s3v4'),
+        region_name='auto',
+    )
 
 
 def create_supabase_auth_user(email: str, password: str = None, user_metadata: dict = None) -> dict:
@@ -119,28 +130,23 @@ def delete_supabase_auth_user(supabase_id: str) -> bool:
 
 def upload_avatar(file, user_id: str) -> str:
     """
-    Upload user avatar to Supabase Storage.
-    
+    Upload user avatar to Cloudflare R2 'avatars' bucket.
+
     Args:
         file: Uploaded file object (from request.FILES)
         user_id: User's UUID as string
-        
+
     Returns:
         Public URL of the uploaded file
-        
+
     Raises:
         Exception: If upload fails
     """
-    supabase = get_supabase_client()
-    
-    # Store in avatars/ folder, one file per user (overwritten on update)
     file_extension = file.name.split('.')[-1].lower()
-    filename = f"avatars/{user_id}.{file_extension}"
-    
-    # Read file content
+    object_key = f"avatars/{user_id}.{file_extension}"
+
     file_content = file.read()
-    
-    # Determine content type
+
     content_type_map = {
         'jpg': 'image/jpeg',
         'jpeg': 'image/jpeg',
@@ -149,49 +155,54 @@ def upload_avatar(file, user_id: str) -> str:
         'gif': 'image/gif',
     }
     content_type = content_type_map.get(file_extension, 'image/jpeg')
-    
-    # Upload to Supabase Storage
-    response = supabase.storage.from_('avatars').upload(
-        path=filename,
-        file=file_content,
-        file_options={
-            'content-type': content_type,
-            'upsert': 'true'
-        }
+
+    client = _get_r2_client()
+    client.put_object(
+        Bucket='avatars',
+        Key=object_key,
+        Body=file_content,
+        ContentType=content_type,
     )
-    
-    # Get public URL
-    public_url = supabase.storage.from_('avatars').get_public_url(filename)
-    
-    return public_url
+
+    # Build public URL from R2_PUBLIC_URLS setting
+    base_url = (settings.R2_PUBLIC_URLS.get('avatars') or '').rstrip('/')
+    if base_url:
+        return f"{base_url}/{object_key}"
+    return object_key
 
 
 def delete_avatar(file_url: str) -> bool:
     """
-    Delete avatar from Supabase Storage.
-    
+    Delete avatar from Cloudflare R2.
+
     Args:
-        file_url: Public URL of the file to delete
-        
+        file_url: Public URL or object key of the file to delete
+
     Returns:
         True if deleted successfully, False otherwise
     """
-    if not file_url or 'supabase' not in file_url:
+    if not file_url:
         return False
-    
+
     try:
-        supabase = get_supabase_client()
-        
-        # Extract file path from URL
-        # URL format: https://<project>.supabase.co/storage/v1/object/public/avatars/<path>
-        if '/avatars/' in file_url:
-            file_path = file_url.split('/avatars/')[-1]
-            supabase.storage.from_('avatars').remove([file_path])
-            return True
+        client = _get_r2_client()
+
+        # Extract the object key from a full URL or use as-is if already a key
+        base_url = (settings.R2_PUBLIC_URLS.get('avatars') or '').rstrip('/')
+        if base_url and file_url.startswith(base_url):
+            object_key = file_url[len(base_url):].lstrip('/')
+        elif file_url.startswith('http'):
+            # Fallback: key is the path after the bucket name in the URL
+            object_key = file_url.split('/avatars/', 1)[-1]
+            if '/' not in object_key:
+                object_key = f"avatars/{object_key}"
+        else:
+            object_key = file_url
+
+        client.delete_object(Bucket='avatars', Key=object_key)
+        return True
     except Exception:
-        pass
-    
-    return False
+        return False
 
 
 def validate_image_file(file) -> tuple[bool, str]:

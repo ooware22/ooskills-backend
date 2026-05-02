@@ -25,31 +25,43 @@ def refresh_leaderboard(period: str = LeaderboardPeriod.ALLTIME):
     For 'alltime': ranks by UserXP.total_xp
     For 'weekly': ranks by sum of XPTransactions in the last 7 days
     """
+    if period == LeaderboardPeriod.ALLTIME:
+        entries = _compute_alltime_rankings()
+    elif period == LeaderboardPeriod.WEEKLY:
+        entries = _compute_weekly_rankings()
+    else:
+        return
+
+    cache_objects = []
+    keep_user_ids = []
+    for rank, entry in enumerate(entries, start=1):
+        user_id = entry['user_id']
+        keep_user_ids.append(user_id)
+        cache_objects.append(
+            LeaderboardCache(
+                user_id=user_id,
+                period=period,
+                total_xp=entry['xp'],
+                level=entry.get('level', 1),
+                rank=rank,
+            )
+        )
+
     with transaction.atomic():
-        # Clear old cache for this period
-        LeaderboardCache.objects.filter(period=period).delete()
-
-        if period == LeaderboardPeriod.ALLTIME:
-            entries = _compute_alltime_rankings()
-        elif period == LeaderboardPeriod.WEEKLY:
-            entries = _compute_weekly_rankings()
-        else:
-            return
-
-        # Bulk create new cache entries
-        cache_objects = []
-        for rank, entry in enumerate(entries, start=1):
-            cache_objects.append(
-                LeaderboardCache(
-                    user_id=entry['user_id'],
-                    period=period,
-                    total_xp=entry['xp'],
-                    level=entry.get('level', 1),
-                    rank=rank,
-                )
+        # Upsert avoids duplicate key crashes when multiple refreshes run concurrently.
+        if cache_objects:
+            LeaderboardCache.objects.bulk_create(
+                cache_objects,
+                update_conflicts=True,
+                update_fields=['total_xp', 'level', 'rank', 'refreshed_at'],
+                unique_fields=['user', 'period'],
             )
 
-        LeaderboardCache.objects.bulk_create(cache_objects)
+            LeaderboardCache.objects.filter(period=period).exclude(
+                user_id__in=keep_user_ids,
+            ).delete()
+        else:
+            LeaderboardCache.objects.filter(period=period).delete()
 
 
 def _compute_alltime_rankings() -> list[dict]:

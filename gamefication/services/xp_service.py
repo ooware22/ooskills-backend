@@ -81,6 +81,19 @@ def award_xp(
     if leveled_up:
         from gamefication.services.notification_email import send_level_up_email_async
         send_level_up_email_async(user, user_xp.level, user_xp.total_xp)
+        try:
+            from users.models import Notification, NotificationType
+            level_title = user_xp.level_title
+            if isinstance(level_title, dict):
+                level_title = level_title.get('fr') or level_title.get('en') or f'Niveau {user_xp.level}'
+            Notification.push(
+                user, NotificationType.LEVEL_UP,
+                f"Niveau {user_xp.level} atteint !",
+                body=f"Vous êtes maintenant {level_title}",
+                link='/dashboard',
+            )
+        except Exception:
+            pass
 
     return {
         'new_xp': user_xp.total_xp,

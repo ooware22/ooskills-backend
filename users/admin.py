@@ -5,7 +5,7 @@ User Admin Configuration for OOSkills Platform
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from django.utils.html import format_html
-from .models import User, UserRole, UserStatus, ReferralCode, Referral
+from .models import User, UserRole, UserStatus, ReferralCode, Referral, AccountDeletionRequest, DeletionRequestStatus
 
 
 @admin.register(User)
@@ -123,3 +123,34 @@ class ReferralAdmin(admin.ModelAdmin):
     list_filter = ['reward_paid', 'created_at']
     search_fields = ['referrer__email', 'referred__email', 'referral_code__code']
     readonly_fields = ['created_at']
+
+
+@admin.register(AccountDeletionRequest)
+class AccountDeletionRequestAdmin(admin.ModelAdmin):
+    """Admin for account deletion requests."""
+    list_display = ['user', 'status_badge', 'reason_short', 'reviewed_by', 'created_at', 'reviewed_at']
+    list_filter = ['status', 'created_at']
+    search_fields = ['user__email', 'user__first_name', 'user__last_name', 'reason']
+    readonly_fields = ['id', 'user', 'reason', 'created_at', 'updated_at']
+    raw_id_fields = ['reviewed_by']
+
+    def status_badge(self, obj):
+        """Display status with colored badge."""
+        colors = {
+            DeletionRequestStatus.PENDING: '#ca8a04',   # amber
+            DeletionRequestStatus.APPROVED: '#16a34a',  # green
+            DeletionRequestStatus.REJECTED: '#dc2626',  # red
+        }
+        color = colors.get(obj.status, '#6b7280')
+        return format_html(
+            '<span style="background-color: {}; color: white; padding: 3px 8px; '
+            'border-radius: 4px; font-size: 11px;">{}</span>',
+            color, obj.get_status_display()
+        )
+    status_badge.short_description = 'Statut'
+    status_badge.admin_order_field = 'status'
+
+    def reason_short(self, obj):
+        """Display truncated reason."""
+        return obj.reason[:80] + '…' if len(obj.reason) > 80 else obj.reason
+    reason_short.short_description = 'Raison'

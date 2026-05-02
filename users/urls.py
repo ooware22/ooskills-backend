@@ -21,7 +21,6 @@ Utility endpoints:
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from rest_framework_simplejwt.views import (
-    TokenRefreshView,
     TokenVerifyView,
 )
 
@@ -33,16 +32,22 @@ from .views import (
     ForgotPasswordView,
     ResetPasswordView,
     LogoutView,
+    CookieTokenRefreshView,
     UploadAvatarView,
     VerifyEmailView,
     ResendVerificationView,
     SocialLoginView,
     MyReferralCodeView,
     MyReferralsView,
+    VerifyReferralCodeView,
     AdminUserViewSet,
     WilayaListView,
     UserRolesView,
     UserStatusesView,
+    AccountDeletionRequestView,
+    ConfirmAccountDeletionView,
+    AdminDeletionRequestViewSet,
+    NotificationViewSet,
 )
 
 
@@ -52,6 +57,7 @@ from .views import (
 
 admin_router = DefaultRouter()
 admin_router.register(r'users', AdminUserViewSet, basename='admin-users')
+admin_router.register(r'deletion-requests', AdminDeletionRequestViewSet, basename='admin-deletion-requests')
 
 
 # =============================================================================
@@ -62,7 +68,7 @@ admin_router.register(r'users', AdminUserViewSet, basename='admin-users')
 auth_urlpatterns = [
     path('register/', RegisterView.as_view(), name='register'),
     path('login/', LoginView.as_view(), name='login'),
-    path('token/refresh/', TokenRefreshView.as_view(), name='token-refresh'),
+    path('token/refresh/', CookieTokenRefreshView.as_view(), name='token-refresh'),
     path('token/verify/', TokenVerifyView.as_view(), name='token-verify'),
     path('verify-email/', VerifyEmailView.as_view(), name='verify-email'),
     path('resend-verification/', ResendVerificationView.as_view(), name='resend-verification'),
@@ -74,7 +80,13 @@ auth_urlpatterns = [
     path('upload-avatar/', UploadAvatarView.as_view(), name='upload-avatar'),
     path('my-referral-code/', MyReferralCodeView.as_view(), name='my-referral-code'),
     path('my-referrals/', MyReferralsView.as_view(), name='my-referrals'),
+    path('verify-referral-code/', VerifyReferralCodeView.as_view(), name='verify-referral-code'),
     path('social-login/', SocialLoginView.as_view(), name='social-login'),
+    path('request-account-deletion/', AccountDeletionRequestView.as_view(), name='request-account-deletion'),
+    path('confirm-account-deletion/', ConfirmAccountDeletionView.as_view(), name='confirm-account-deletion'),
+    path('notifications/', NotificationViewSet.as_view({'get': 'list'}), name='notifications-list'),
+    path('notifications/<uuid:pk>/read/', NotificationViewSet.as_view({'post': 'mark_read'}), name='notification-read'),
+    path('notifications/mark-all-read/', NotificationViewSet.as_view({'post': 'mark_all_read'}), name='notifications-mark-all-read'),
 ]
 
 # Utility URL patterns

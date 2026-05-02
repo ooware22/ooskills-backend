@@ -12,6 +12,7 @@ Based on Cahier des Charges specifications:
 """
 
 import uuid
+from django.conf import settings
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
 from django.db import models
 from django.utils import timezone
@@ -356,6 +357,15 @@ class User(AbstractBaseUser, PermissionsMixin):
         default=False
     )
     
+    # Referral balance (wallet for parrainage rewards in DZD)
+    referral_balance = models.DecimalField(
+        'Solde parrainage',
+        max_digits=10,
+        decimal_places=2,
+        default=0,
+        help_text="Solde des récompenses de parrainage en DZD"
+    )
+    
     # Manager
     objects = UserManager()
     
@@ -395,9 +405,16 @@ class User(AbstractBaseUser, PermissionsMixin):
     
     @property
     def avatar_display_url(self):
-        """Return avatar URL (Supabase URL preferred, local file as fallback)."""
+        """Return avatar URL (Supabase URL preferred, local file as fallback).
+        Appends a cache-busting timestamp based on updated_at to prevent
+        browsers from serving stale cached avatars after re-upload.
+        """
         if self.avatar_url:
-            return self.avatar_url
+            # Add cache-busting param so browsers refetch after avatar update
+            import time
+            ts = int(time.time())
+            sep = '&' if '?' in self.avatar_url else '?'
+            return f"{self.avatar_url}{sep}t={ts}"
         if self.avatar:
             return self.avatar.url
         return None
@@ -672,3 +689,144 @@ class PasswordResetToken(models.Model):
         self.is_used = True
         self.save(update_fields=['is_used'])
         return True
+
+
+# =============================================================================
+# ACCOUNT DELETION REQUEST
+# =============================================================================
+
+class DeletionRequestStatus(models.TextChoices):
+    """Status choices for account deletion requests."""
+    PENDING = 'PENDING', 'En attente'
+    APPROVED = 'APPROVED', 'Approuvé'
+    REJECTED = 'REJECTED', 'Rejeté'
+
+
+class AccountDeletionRequest(models.Model):
+    """
+    User-initiated account deletion request.
+    
+    Flow:
+    1. User submits a request with a reason
+    2. Admin reviews and approves/rejects
+    3. If approved, user confirms with password to trigger cascade delete
+    """
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False
+    )
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='deletion_requests'
+    )
+    reason = models.TextField(
+        'Raison de suppression',
+        help_text="Pourquoi souhaitez-vous supprimer votre compte ?"
+    )
+    status = models.CharField(
+        'Statut',
+        max_length=20,
+        choices=DeletionRequestStatus.choices,
+        default=DeletionRequestStatus.PENDING,
+        db_index=True
+    )
+    admin_notes = models.TextField(
+        'Notes admin',
+        blank=True,
+        help_text="Commentaire de l'administrateur"
+    )
+    reviewed_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='reviewed_deletion_requests',
+        help_text="Admin qui a traité la demande"
+    )
+    reviewed_at = models.DateTimeField(
+        'Date de traitement',
+        null=True,
+        blank=True
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'Demande de suppression'
+        verbose_name_plural = 'Demandes de suppression'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['user', 'status']),
+            models.Index(fields=['status', '-created_at']),
+        ]
+
+    def __str__(self):
+        return f"Deletion request by {self.user.email} ({self.get_status_display()})"
+
+
+# =============================================================================
+# IN-APP NOTIFICATION MODEL
+# =============================================================================
+
+class NotificationType(models.TextChoices):
+    COURSE_PURCHASED    = 'course_purchased',    'Cours acheté'
+    COURSE_COMPLETED    = 'course_completed',    'Cours terminé'
+    CERTIFICATE_EARNED  = 'certificate_earned',  'Certificat obtenu'
+    ACHIEVEMENT_UNLOCKED = 'achievement_unlocked', 'Badge débloqué'
+    LEVEL_UP            = 'level_up',            'Niveau supérieur'
+    GIFT_RECEIVED       = 'gift_received',        'Cadeau reçu'
+    REFERRAL_BONUS      = 'referral_bonus',       'Bonus parrainage'
+    QUIZ_PASSED         = 'quiz_passed',          'Quiz réussi'
+
+
+class Notification(models.Model):
+    """
+    In-app notification for dashboard events.
+    Kept lightweight: no body media, no push — dashboard-only.
+    Max 100 rows per user; oldest are purged automatically on creation.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='notifications',
+    )
+    type = models.CharField(
+        'Type',
+        max_length=30,
+        choices=NotificationType.choices,
+        db_index=True,
+    )
+    title = models.CharField('Titre', max_length=200)
+    body  = models.CharField('Corps', max_length=500, blank=True)
+    link  = models.CharField('Lien',  max_length=200, blank=True)
+    is_read = models.BooleanField('Lu', default=False, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = 'Notification'
+        verbose_name_plural = 'Notifications'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['user', '-created_at']),
+            models.Index(fields=['user', 'is_read']),
+        ]
+
+    def __str__(self):
+        return f"[{self.type}] {self.user.email} — {self.title}"
+
+    @classmethod
+    def push(cls, user, type: str, title: str, body: str = '', link: str = ''):
+        """Create a notification and enforce the 100-row cap per user."""
+        notif = cls.objects.create(user=user, type=type, title=title, body=body, link=link)
+        # Keep only the 100 most recent per user to avoid unbounded growth
+        old_ids = (
+            cls.objects.filter(user=user)
+            .order_by('-created_at')
+            .values_list('id', flat=True)[100:]
+        )
+        if old_ids:
+            cls.objects.filter(id__in=list(old_ids)).delete()
+        return notif

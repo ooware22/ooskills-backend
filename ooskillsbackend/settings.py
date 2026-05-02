@@ -177,6 +177,11 @@ STATIC_ROOT = BASE_DIR / 'staticfiles'
 MEDIA_URL = 'media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
+# Large file upload settings (ZIP imports can be hundreds of MB)
+DATA_UPLOAD_MAX_MEMORY_SIZE = 500 * 1024 * 1024   # 500 MB — max request body
+FILE_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024     # 10 MB — files larger than this are streamed to disk
+FILE_UPLOAD_TEMP_DIR = str(BASE_DIR / 'tmp_uploads')
+
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
@@ -196,6 +201,32 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAuthenticatedOrReadOnly',
     ],
+    # ---------------------------------------------------------------------------
+    # Rate limiting — global defaults + scoped overrides on sensitive endpoints.
+    # Buckets are enforced per IP (anon) or per user (authenticated).
+    # ---------------------------------------------------------------------------
+    'DEFAULT_THROTTLE_CLASSES': [
+        'rest_framework.throttling.AnonRateThrottle',
+        'rest_framework.throttling.UserRateThrottle',
+        'rest_framework.throttling.ScopedRateThrottle',
+    ],
+    'DEFAULT_THROTTLE_RATES': {
+        # Global defaults
+        'anon': '100/hour',
+        'user': '1000/hour',
+        # Auth — tightly limited to prevent brute-force / abuse
+        'auth_login': '10/min',
+        'auth_register': '5/min',
+        'auth_social': '10/min',
+        'auth_refresh': '30/min',
+        'auth_email': '5/min',        # resend verification
+        'auth_password_reset': '3/min',
+        # API actions with real-world cost
+        'enrollment': '20/hour',
+        'quiz_attempt': '10/hour',
+        'order_create': '10/hour',
+        'gift_create': '5/hour',
+    },
     'DEFAULT_FILTER_BACKENDS': [
         'django_filters.rest_framework.DjangoFilterBackend',
         'rest_framework.filters.SearchFilter',
@@ -203,10 +234,11 @@ REST_FRAMEWORK = {
     ],
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'PAGE_SIZE': 20,
-    'DEFAULT_RENDERER_CLASSES': [
-        'rest_framework.renderers.JSONRenderer',
-        'rest_framework.renderers.BrowsableAPIRenderer',  # Remove in production
-    ],
+    'DEFAULT_RENDERER_CLASSES': (
+        ['rest_framework.renderers.JSONRenderer', 'rest_framework.renderers.BrowsableAPIRenderer']
+        if DEBUG else
+        ['rest_framework.renderers.JSONRenderer']
+    ),
     'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
 }
 
@@ -306,21 +338,33 @@ CORS_ALLOW_ALL_ORIGINS = DEBUG
 # CACHING CONFIGURATION
 # =============================================================================
 
-CACHES = {
-    'default': {
-        # Use database cache for simplicity, switch to Redis in production
-        'BACKEND': 'django.core.cache.backends.db.DatabaseCache',
-        'LOCATION': 'django_cache',
-    }
-}
+REDIS_URL = os.environ.get('REDIS_URL', '')
 
-# For production, use Redis:
-# CACHES = {
-#     'default': {
-#         'BACKEND': 'django.core.cache.backends.redis.RedisCache',
-#         'LOCATION': os.environ.get('REDIS_URL', 'redis://127.0.0.1:6379/1'),
-#     }
-# }
+if REDIS_URL:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django_redis.cache.RedisCache',
+            'LOCATION': REDIS_URL,
+            'OPTIONS': {
+                'CLIENT_CLASS': 'django_redis.client.DefaultClient',
+                'SOCKET_CONNECT_TIMEOUT': 5,
+                'SOCKET_TIMEOUT': 5,
+                'RETRY_ON_TIMEOUT': True,
+                'IGNORE_EXCEPTIONS': True,  # Graceful degradation
+            },
+            'KEY_PREFIX': 'ooskills',
+            'TIMEOUT': 300,  # Default TTL: 5 minutes
+        }
+    }
+else:
+    # Fallback: in-memory cache for local dev when Redis is not configured
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+            'LOCATION': 'ooskills-cache',
+            'TIMEOUT': 300,
+        }
+    }
 
 
 # =============================================================================
@@ -373,3 +417,33 @@ if NGROK_URL:
     if _ngrok_host and _ngrok_host not in ALLOWED_HOSTS:
         ALLOWED_HOSTS.append(_ngrok_host)
     CSRF_TRUSTED_ORIGINS = [NGROK_URL]
+
+
+# =============================================================================
+# CLOUDFLARE R2 STORAGE CONFIGURATION
+# =============================================================================
+# R2 is S3-compatible. Get credentials from Cloudflare dashboard:
+#   Workers & Pages → R2 → Manage R2 API tokens
+#
+# Buckets used (create these in the R2 dashboard):
+#   audios, images, materials, Diapositive, avatars
+#
+# For each public bucket, set a custom domain or enable the r2.dev subdomain
+# and set the corresponding R2_PUBLIC_URL_* env var.
+
+R2_ACCOUNT_ID = os.environ.get('R2_ACCOUNT_ID', '')
+R2_ACCESS_KEY_ID = os.environ.get('R2_ACCESS_KEY_ID', '')
+R2_SECRET_ACCESS_KEY = os.environ.get('R2_SECRET_ACCESS_KEY', '')
+
+# S3-compatible endpoint (boto3 endpoint_url)
+R2_ENDPOINT_URL = f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com" if R2_ACCOUNT_ID else ''
+
+# Public base URLs per bucket — set to your r2.dev subdomain or custom domain.
+# Example:  https://pub-abc123.r2.dev  or  https://cdn.ooskills.com
+R2_PUBLIC_URLS = {
+    'audios':      os.environ.get('R2_PUBLIC_URL_AUDIOS', ''),
+    'images':      os.environ.get('R2_PUBLIC_URL_IMAGES', ''),
+    'materials':   os.environ.get('R2_PUBLIC_URL_MATERIALS', ''),
+    'diapositive': os.environ.get('R2_PUBLIC_URL_DIAPOSITIVE', ''),
+    'avatars':     os.environ.get('R2_PUBLIC_URL_AVATARS', ''),
+}

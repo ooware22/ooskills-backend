@@ -6,6 +6,8 @@ import json
 import logging
 from uuid import UUID
 
+from django.core.cache import cache
+
 from django.db import models as db_models
 from django.db import close_old_connections
 from django.db.utils import OperationalError, InterfaceError
@@ -16,6 +18,7 @@ from rest_framework import viewsets, status, mixins
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework.throttling import ScopedRateThrottle
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import OrderingFilter
 from drf_spectacular.utils import extend_schema, extend_schema_view
@@ -60,11 +63,31 @@ from formation.services.final_quiz_service import (
 )
 from formation.chargily_service import create_chargily_checkout, client as chargily_client
 
+from formation.cache import (
+    course_list_key, course_detail_key, category_list_key,
+    section_list_key, enrollment_key, certificate_verify_key,
+    COURSE_LIST_TTL, COURSE_DETAIL_TTL, CATEGORY_LIST_TTL,
+    SECTION_LIST_TTL, ENROLLMENT_TTL, CERTIFICATE_TTL,
+)
+
 logger = logging.getLogger(__name__)
 
 ADMIN_ONLY_MSG = 'Admin only.'
 NOT_ENROLLED_MSG = 'Not enrolled in this course.'
 COURSE_NOT_FOUND_MSG = 'Course not found.'
+
+
+def _is_enrolled_cached(user, course) -> bool:
+    """Check enrollment with cache. Returns True if enrolled."""
+    if not user.is_authenticated:
+        return False
+    key = enrollment_key(user.id, course.id if hasattr(course, 'id') else course)
+    cached = cache.get(key)
+    if cached is not None:
+        return cached == '1'
+    exists = Enrollment.objects.filter(user=user, course=course).exists()
+    cache.set(key, '1' if exists else '0', ENROLLMENT_TTL)
+    return exists
 
 
 def _auto_enroll_order_user(order: Order) -> None:
@@ -124,6 +147,16 @@ class CategoryViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAdminOrReadOnly]
     lookup_field = 'slug'
 
+    def list(self, request, *args, **kwargs):
+        """Cached category list."""
+        key = category_list_key()
+        cached = cache.get(key)
+        if cached is not None:
+            return Response(cached)
+        response = super().list(request, *args, **kwargs)
+        cache.set(key, response.data, CATEGORY_LIST_TTL)
+        return response
+
 
 # ─── Course ──────────────────────────────────────────────────────────────────
 
@@ -140,32 +173,49 @@ class CourseViewSet(DBRetryReadMixin, viewsets.ModelViewSet):
     ordering = ['-date']
 
     def get_queryset(self):
-        # Pre-annotate nested modules and sections to avoid N+1 queries
-        # in serializers when returning course content trees.
-        annotated_modules = Module.objects.annotate(
-            _lessons_count=Count('lessons', distinct=True),
-            _total_duration_seconds=Sum('lessons__duration_seconds'),
-        ).prefetch_related('lessons')
+        base_qs = Course.objects.select_related('category')
 
-        annotated_sections = Section.objects.annotate(
-            _modules_count=Count('modules', distinct=True),
-            _total_duration_seconds=Sum('modules__lessons__duration_seconds'),
-        ).prefetch_related(
-            Prefetch('modules', queryset=annotated_modules),
-            'quiz__questions',
-        )
+        if self.action == 'retrieve':
+            # Detail view needs the full nested content tree.
+            annotated_modules = Module.objects.annotate(
+                _lessons_count=Count('lessons', distinct=True),
+                _total_duration_seconds=Sum('lessons__duration_seconds'),
+            ).prefetch_related('lessons')
 
-        qs = Course.objects.select_related('category').prefetch_related(
-            Prefetch('sections', queryset=annotated_sections),
-            'materials',
-        ).annotate(
-            # Pre-compute totals used by CourseDetailSerializer
-            _total_modules=Count('sections__modules', distinct=True),
-            _total_slides=Count('sections__modules__lessons', distinct=True),
-            _total_quiz_questions=Count(
-                'sections__quiz__questions', distinct=True,
-            ),
-        )
+            annotated_sections = Section.objects.annotate(
+                _modules_count=Count('modules', distinct=True),
+                _total_duration_seconds=Sum('modules__lessons__duration_seconds'),
+            ).prefetch_related(
+                Prefetch('modules', queryset=annotated_modules),
+                'quiz__questions',
+            )
+
+            qs = base_qs.prefetch_related(
+                Prefetch('sections', queryset=annotated_sections),
+                'materials',
+            ).annotate(
+                _total_modules=Count('sections__modules', distinct=True),
+                _total_slides=Count('sections__modules__lessons', distinct=True),
+                _total_quiz_questions=Count(
+                    'sections__quiz__questions', distinct=True,
+                ),
+            )
+        elif self.action == 'list':
+            # List view only needs section summaries, not full lessons/questions.
+            list_sections = Section.objects.annotate(
+                _modules_count=Count('modules', distinct=True),
+                _total_duration_seconds=Sum('modules__lessons__duration_seconds'),
+            )
+
+            qs = base_qs.prefetch_related(
+                Prefetch('sections', queryset=list_sections),
+                'materials',
+            ).annotate(
+                _total_slides=Count('sections__modules__lessons', distinct=True),
+            )
+        else:
+            qs = base_qs
+
         # Non-admin users only see published courses
         if not (self.request.user.is_authenticated and self.request.user.is_admin):
             qs = qs.filter(status=CourseStatus.PUBLISHED)
@@ -179,26 +229,93 @@ class CourseViewSet(DBRetryReadMixin, viewsets.ModelViewSet):
         return CourseListSerializer
 
     def list(self, request, *args, **kwargs):
-        return self._run_with_db_retry(
+        is_admin = request.user.is_authenticated and request.user.is_admin
+        key = course_list_key(dict(request.query_params), is_admin=is_admin)
+        cached = cache.get(key)
+        if cached is not None:
+            return Response(cached)
+        response = self._run_with_db_retry(
             lambda: super(CourseViewSet, self).list(request, *args, **kwargs)
         )
+        cache.set(key, response.data, COURSE_LIST_TTL)
+        return response
 
     def retrieve(self, request, *args, **kwargs):
-        return self._run_with_db_retry(
+        slug = kwargs.get('slug', self.kwargs.get('slug'))
+        key = course_detail_key(slug) if slug else None
+        if key:
+            cached = cache.get(key)
+            if cached is not None:
+                return Response(cached)
+        response = self._run_with_db_retry(
             lambda: super(CourseViewSet, self).retrieve(request, *args, **kwargs)
         )
+        if key:
+            cache.set(key, response.data, COURSE_DETAIL_TTL)
+        return response
 
     def destroy(self, request, *args, **kwargs):
         """Delete a course, handling ProtectedError from related OrderItems."""
         instance = self.get_object()
+        slug = instance.slug
+        course_id = str(instance.id)
+
         try:
-            self.perform_destroy(instance)
+            # Clear ALL FileFields across related models BEFORE cascade
+            # to prevent Django from spawning hundreds of individual Supabase
+            # delete threads.  The post_delete signal on Course handles
+            # bulk storage cleanup via delete_course_storage_async().
+
+            from django.db import connection as _db_conn
+            from formation.models import Lesson, CourseMaterial, FinalQuiz, FinalQuizAudio
+
+            # Disable statement_timeout for this connection so that bulk
+            # UPDATE across many lessons doesn't hit the server-side limit.
+            with _db_conn.cursor() as _cur:
+                _cur.execute("SET statement_timeout = 0")
+
+            # Lessons: audioUrl + diapositiveUrl
+            Lesson.objects.filter(
+                module__section__course=instance
+            ).update(audioUrl='', diapositiveUrl='')
+
+            # Course materials: file
+            CourseMaterial.objects.filter(course=instance).update(file='')
+
+            # Final quiz: motivation_audio + audio entries
+            FinalQuizAudio.objects.filter(
+                final_quiz__course=instance
+            ).update(audio='')
+            FinalQuiz.objects.filter(course=instance).update(motivation_audio='')
+
+            # Course image
+            if instance.image:
+                instance.image = ''
+                instance.save(update_fields=['image'])
+
+            # Now perform the actual delete with DB retry
+            self._run_with_db_retry(
+                lambda: self.perform_destroy(instance)
+            )
         except db_models.ProtectedError:
             return Response(
                 {'detail': 'Cannot delete this course because it has existing orders. '
                            'Please remove or archive the related orders first.'},
                 status=status.HTTP_409_CONFLICT,
             )
+        except Exception as e:
+            logger.exception("Failed to delete course %s: %s", slug, e)
+            return Response(
+                {'detail': f'Server error while deleting course: {e}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+        # Bust cached course list + detail so the deletion is visible immediately.
+        try:
+            from formation.cache import invalidate_course_caches, invalidate_sections
+            invalidate_course_caches(slug)
+            invalidate_sections()
+        except Exception:
+            pass  # Cache invalidation failure shouldn't block the response
         return Response(status=status.HTTP_204_NO_CONTENT)
 
     @extend_schema(
@@ -214,7 +331,7 @@ class CourseViewSet(DBRetryReadMixin, viewsets.ModelViewSet):
         user = request.user
 
         # Check enrollment
-        if not Enrollment.objects.filter(user=user, course=course).exists():
+        if not _is_enrolled_cached(user, course):
             return Response(
                 {'detail': 'You must be enrolled in this course to rate it.'},
                 status=status.HTTP_403_FORBIDDEN,
@@ -286,34 +403,44 @@ class CourseViewSet(DBRetryReadMixin, viewsets.ModelViewSet):
         if not zip_file:
             return Response({'detail': 'No zip_file provided.'}, status=status.HTTP_400_BAD_REQUEST)
             
-        import tempfile, os
+        import tempfile, os, threading
         from formation.services.zip_import_service import import_course_from_zip
         from django.contrib.auth import get_user_model
         User = get_user_model()
         
+        # Save the uploaded ZIP to a temp file so we can release the request.
         fd, temp_zip_path = tempfile.mkstemp(suffix='.zip', prefix='ooskills_up_')
-        
-        category = Category.objects.filter(id=category_id).first() if category_id else None
-        instructor = User.objects.filter(id=instructor_id).first() if instructor_id else None
-        
         try:
             with os.fdopen(fd, 'wb') as f:
                 for chunk in zip_file.chunks():
                     f.write(chunk)
-            
-            # Do not keep one long transaction open across zip extraction/parsing.
-            # Long-running imports can hit DB/pool timeouts before all lesson inserts.
-            course = import_course_from_zip(temp_zip_path, category, instructor)
-                
         except Exception as e:
-            import traceback
-            traceback.print_exc()
-            return Response({'detail': str(e)}, status=status.HTTP_400_BAD_REQUEST)
-        finally:
-            if temp_zip_path and os.path.exists(temp_zip_path):
+            if os.path.exists(temp_zip_path):
                 os.remove(temp_zip_path)
-                
-        return Response(CourseDetailSerializer(course, context={'request': request}).data, status=status.HTTP_201_CREATED)
+            return Response({'detail': f'Error saving upload: {e}'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        category = Category.objects.filter(id=category_id).first() if category_id else None
+        instructor = User.objects.filter(id=instructor_id).first() if instructor_id else None
+        
+        def _run_import():
+            """Background worker: parse ZIP, create Course/Sections/Lessons, upload files."""
+            try:
+                course = import_course_from_zip(temp_zip_path, category, instructor)
+                logger.info("ZIP import completed successfully — course id=%s title=%s", course.id, course.title)
+            except Exception as e:
+                logger.exception("ZIP import FAILED: %s", e)
+            finally:
+                if temp_zip_path and os.path.exists(temp_zip_path):
+                    os.remove(temp_zip_path)
+        
+        # Fire-and-forget: import runs in background, request returns immediately.
+        thread = threading.Thread(target=_run_import, name='zip-import-main', daemon=True)
+        thread.start()
+        
+        return Response(
+            {'detail': 'Import started. The course will appear in the admin panel once processing completes.'},
+            status=status.HTTP_202_ACCEPTED,
+        )
 
 
 # ─── Course Material ─────────────────────────────────────────────────────────
@@ -380,9 +507,15 @@ class SectionViewSet(DBRetryReadMixin, viewsets.ModelViewSet):
         return SectionDetailSerializer
 
     def list(self, request, *args, **kwargs):
-        return self._run_with_db_retry(
+        key = section_list_key(dict(request.query_params))
+        cached = cache.get(key)
+        if cached is not None:
+            return Response(cached)
+        response = self._run_with_db_retry(
             lambda: super(SectionViewSet, self).list(request, *args, **kwargs)
         )
+        cache.set(key, response.data, SECTION_LIST_TTL)
+        return response
 
     def retrieve(self, request, *args, **kwargs):
         return self._run_with_db_retry(
@@ -515,6 +648,8 @@ class EnrollmentViewSet(
     permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend]
     filterset_class = EnrollmentFilter
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'enrollment'
 
     def get_queryset(self):
         return Enrollment.objects.filter(user=self.request.user).select_related('course')
@@ -641,6 +776,8 @@ class QuizAttemptViewSet(
     viewsets.GenericViewSet,
 ):
     permission_classes = [IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'quiz_attempt'
 
     def get_queryset(self):
         return QuizAttempt.objects.filter(
@@ -714,6 +851,8 @@ class OrderViewSet(
     permission_classes = [IsAuthenticated, IsOwnerOrAdmin]
     filter_backends = [DjangoFilterBackend]
     filterset_class = OrderFilter
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'order_create'
 
     def get_queryset(self):
         user = self.request.user
@@ -739,7 +878,56 @@ class OrderViewSet(
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        total = sum(c.price for c in courses)
+        subtotal = sum(c.price for c in courses)
+
+        # ── Apply promo code ──────────────────────────────────────────────────
+        promo_code_str = ser.validated_data.get('promo_code', '').strip().upper()
+        applied_promo = None
+        promo_discount = 0
+
+        if promo_code_str:
+            try:
+                promo = PromoCode.objects.get(code__iexact=promo_code_str)
+            except PromoCode.DoesNotExist:
+                return Response({'detail': 'Code promo invalide.'}, status=status.HTTP_400_BAD_REQUEST)
+
+            if not promo.is_valid:
+                return Response({'detail': 'Ce code promo a expiré ou est épuisé.'}, status=status.HTTP_400_BAD_REQUEST)
+
+            # Per-user usage limit
+            user_usage = PromoCodeUsage.objects.filter(user=request.user, promo_code=promo).count()
+            if user_usage >= promo.max_uses_per_user:
+                return Response({'detail': 'Vous avez déjà utilisé ce code promo.'}, status=status.HTTP_400_BAD_REQUEST)
+
+            # Course restriction
+            if promo.courses.exists():
+                for course in courses:
+                    if not promo.courses.filter(id=course.id).exists():
+                        return Response(
+                            {'detail': f'Le code promo ne s\'applique pas au cours «\u202f{course.title}\u202f».'},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
+
+            # Min order check
+            if promo.min_order_total and subtotal < promo.min_order_total:
+                return Response(
+                    {'detail': f'Le montant minimum pour ce code est de {promo.min_order_total}\u202fDZD.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            promo_discount = promo.compute_discount(subtotal)
+            applied_promo = promo
+
+        # ── Apply wallet (referral balance) ───────────────────────────────────
+        use_wallet = ser.validated_data.get('use_wallet', False)
+        wallet_discount = 0
+
+        if use_wallet and request.user.referral_balance > 0:
+            after_promo = max(0, subtotal - promo_discount)
+            wallet_discount = min(int(request.user.referral_balance), after_promo)
+
+        total = max(0, subtotal - promo_discount - wallet_discount)
+
         order = Order.objects.create(
             user=request.user,
             total=total,
@@ -750,6 +938,26 @@ class OrderViewSet(
         for course in courses:
             OrderItem.objects.create(
                 order=order, course=course, price=course.price,
+            )
+
+        # Record promo usage and increment counter
+        if applied_promo:
+            PromoCodeUsage.objects.create(
+                user=request.user,
+                promo_code=applied_promo,
+                order=order,
+                discount_applied=promo_discount,
+            )
+            PromoCode.objects.filter(pk=applied_promo.pk).update(
+                uses_count=db_models.F('uses_count') + 1,
+            )
+
+        # Deduct wallet balance
+        if wallet_discount > 0:
+            from django.db.models import F
+            from django.contrib.auth import get_user_model
+            get_user_model().objects.filter(pk=request.user.pk).update(
+                referral_balance=F('referral_balance') - wallet_discount,
             )
 
         # Free order → mark paid immediately and auto-enroll
@@ -772,7 +980,10 @@ class OrderViewSet(
             # Pass the first course slug for the success redirect
             first_course_slug = courses.first().slug if courses.exists() else ''
             chargily_id, checkout_url = create_chargily_checkout(
-                order, payment_method=payment_method, course_slug=first_course_slug,
+                order,
+                payment_method=payment_method,
+                course_slug=first_course_slug,
+                request=request,
             )
             order.chargily_checkout_id = chargily_id
             order.checkout_url = checkout_url
@@ -1036,6 +1247,13 @@ class FinalQuizViewSet(viewsets.GenericViewSet):
         if not course_id:
             return Response({'detail': 'course_id query parameter required.'}, status=status.HTTP_400_BAD_REQUEST)
 
+        # Validate UUID format
+        import uuid as _uuid
+        try:
+            _uuid.UUID(str(course_id))
+        except (ValueError, AttributeError):
+            return Response({'detail': 'Invalid course_id format.'}, status=status.HTTP_400_BAD_REQUEST)
+
         try:
             fq = FinalQuiz.objects.get(course_id=course_id)
         except FinalQuiz.DoesNotExist:
@@ -1204,7 +1422,11 @@ class CertificateViewSet(viewsets.ReadOnlyModelViewSet):
 
     @action(detail=False, methods=['get'], url_path='verify/(?P<code>[^/.]+)')
     def verify(self, request, code=None):
-        """Public endpoint to verify a certificate by its code."""
+        """Public endpoint to verify a certificate by its code (cached)."""
+        key = certificate_verify_key(code)
+        cached = cache.get(key)
+        if cached is not None:
+            return Response(cached)
         try:
             cert = Certificate.objects.select_related('course', 'user').get(code=code)
         except Certificate.DoesNotExist:
@@ -1212,7 +1434,9 @@ class CertificateViewSet(viewsets.ReadOnlyModelViewSet):
                 {'detail': 'Certificate not found.'},
                 status=status.HTTP_404_NOT_FOUND,
             )
-        return Response(CertificateSerializer(cert).data)
+        data = CertificateSerializer(cert).data
+        cache.set(key, data, CERTIFICATE_TTL)
+        return Response(data)
 
     @action(detail=False, methods=['get'], url_path='merged')
     def merged(self, request):
@@ -1489,6 +1713,15 @@ class CourseGiftViewSet(viewsets.GenericViewSet):
     """
     serializer_class = CourseGiftSerializer
     permission_classes = [IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]
+
+    def get_throttles(self):
+        # Apply strict scope only on gift write actions.
+        if self.action in ('send', 'claim'):
+            self.throttle_scope = 'gift_create'
+            return [throttle() for throttle in self.throttle_classes]
+        # Read endpoints should not be constrained by the gift_create scope.
+        return []
 
     @action(detail=False, methods=['post'])
     def send(self, request):
