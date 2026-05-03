@@ -1843,3 +1843,21 @@ class CourseGiftViewSet(viewsets.GenericViewSet):
             db_models.Q(recipient_email=request.user.email)
         )
         return Response(CourseGiftSerializer(gifts, many=True).data)
+
+
+from django.http import HttpResponse
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated, AllowAny
+from asgiref.sync import async_to_sync
+from .pdf_generator import generate_certificate_pdf
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def download_certificate_pdf(request, code):
+    try:
+        pdf_bytes = async_to_sync(generate_certificate_pdf)(code)
+        response = HttpResponse(pdf_bytes, content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="OOSkills_Certificate_{code}.pdf"'
+        return response
+    except Exception as e:
+        return HttpResponse(f"Failed to generate PDF: {str(e)}", status=500)

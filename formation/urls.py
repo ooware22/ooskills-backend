@@ -33,4 +33,5 @@ router.register(r'gifts', views.CourseGiftViewSet, basename='gift')
 urlpatterns = [
     path('', include(router.urls)),
     path('chargily/webhook/', csrf_exempt(views.ChargilyWebhookView.as_view()), name='chargily-webhook'),
+    path('certificates/export/<str:code>/pdf/', views.download_certificate_pdf, name='export_certificate_pdf'),
 ]
