@@ -1463,9 +1463,9 @@ class CertificateViewSet(viewsets.ReadOnlyModelViewSet):
             user=request.user
         ).select_related('course', 'user').order_by('-issuedAt')
 
-        if certs.count() < 2:
+        if not certs.exists():
             return Response(
-                {'detail': 'At least 2 certificates are required for a merged badge.'},
+                {'detail': 'At least 1 certificate is required for a merged badge.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -1846,18 +1846,159 @@ class CourseGiftViewSet(viewsets.GenericViewSet):
 
 
 from django.http import HttpResponse
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes, throttle_classes
 from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework.throttling import AnonRateThrottle
 from asgiref.sync import async_to_sync
-from .pdf_generator import generate_certificate_pdf
+from .pdf_generator import generate_certificate_pdf, generate_merged_certificate_pdf
+
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
-def download_certificate_pdf(request, code):
+@throttle_classes([AnonRateThrottle])
+def download_certificate_pdf_view(request, code):
+    """
+    Download a single-course certificate as a high-quality PDF.
+
+    GET /api/formation/certificates/export/<code>/pdf/
+
+    Pre-fetches the certificate data from the DB and passes it directly
+    to Playwright via a base64-encoded query parameter, avoiding a
+    callback deadlock with the dev server.
+    """
     try:
-        pdf_bytes = async_to_sync(generate_certificate_pdf)(code)
+        cert = Certificate.objects.select_related('course', 'user').get(code=code)
+    except Certificate.DoesNotExist:
+        return HttpResponse("Certificate not found.", status=404)
+
+    user = cert.user
+    student_name = (
+        getattr(user, 'full_name', '') or
+        f'{user.first_name} {user.last_name}'.strip() or
+        user.email.split('@')[0]
+    )
+
+    prefetched = {
+        'code': cert.code,
+        'user_name': student_name,
+        'course_title': cert.course.title,
+        'duration': getattr(cert.course, 'duration', None),
+        'level': getattr(cert.course, 'level', None),
+        'issued_at': cert.issuedAt.isoformat(),
+        'issuedAt': cert.issuedAt.isoformat(),
+        'score': float(cert.score) if cert.score is not None else None,
+    }
+
+    try:
+        pdf_bytes = generate_certificate_pdf(code, prefetched_data=prefetched)
         response = HttpResponse(pdf_bytes, content_type='application/pdf')
         response['Content-Disposition'] = f'attachment; filename="OOSkills_Certificate_{code}.pdf"'
         return response
-    except Exception as e:
-        return HttpResponse(f"Failed to generate PDF: {str(e)}", status=500)
+    except Exception:
+        logger.exception("PDF generation failed for certificate %s", code)
+        return HttpResponse("Failed to generate certificate PDF.", status=500)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def download_merged_certificate_pdf_view(request):
+    """
+    Download a merged (multi-course) certificate as a high-quality PDF.
+
+    GET /api/formation/certificates/export/merged/pdf/
+
+    Pre-fetches the certificate data from the DB and passes it directly
+    to Playwright via a base64-encoded query parameter, avoiding a
+    callback deadlock with the dev server.
+    """
+    user = request.user
+    certs = Certificate.objects.filter(user=user).select_related('course').order_by('-issuedAt')
+    cert_count = certs.count()
+    if not certs.exists():
+        return Response(
+            {'detail': 'At least 1 certificate is required for a merged badge.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    student_name = (
+        getattr(user, 'full_name', '') or
+        f'{user.first_name} {user.last_name}'.strip() or
+        user.email.split('@')[0]
+    )
+
+    courses = [
+        {'course_name': cert.course.title, 'score': int(cert.score)}
+        for cert in certs
+    ]
+
+    latest = certs.first()
+    short_id = str(user.id)[:8].upper()
+
+    prefetched = {
+        'code': f'MERGED-{short_id}',
+        'student_name': student_name,
+        'courses': courses,
+        'issued_at': latest.issuedAt.isoformat(),
+    }
+
+    try:
+        pdf_bytes = generate_merged_certificate_pdf(str(user.id), prefetched_data=prefetched)
+        safe_name = student_name.replace(' ', '_')
+        response = HttpResponse(pdf_bytes, content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="OOSkills_MergedBadge_{safe_name}.pdf"'
+        return response
+    except Exception:
+        logger.exception("Merged PDF generation failed for user %s", user.id)
+        return HttpResponse("Failed to generate merged certificate PDF.", status=500)
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def merged_certificate_export_data(request):
+    """
+    Internal endpoint for Playwright to fetch merged certificate data
+    by user_id without requiring auth cookies.
+
+    GET /api/formation/certificates/merged-export/?uid=<user_uuid>
+
+    This is NOT a public user-facing endpoint — it's consumed by
+    the headless Chromium browser running on the same server.
+    """
+    uid = request.query_params.get('uid')
+    if not uid:
+        return Response({'detail': 'uid is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    from django.contrib.auth import get_user_model
+    User = get_user_model()
+    try:
+        user = User.objects.get(id=uid)
+    except User.DoesNotExist:
+        return Response({'detail': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+    certs = Certificate.objects.filter(user=user).select_related('course').order_by('-issuedAt')
+    if not certs.exists():
+        return Response(
+            {'detail': 'At least 1 certificate is required.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    student_name = (
+        getattr(user, 'full_name', '') or
+        f'{user.first_name} {user.last_name}'.strip() or
+        user.email.split('@')[0]
+    )
+
+    courses = [
+        {'course_name': cert.course.title, 'score': int(cert.score)}
+        for cert in certs
+    ]
+
+    latest = certs.first()
+    short_id = str(user.id)[:8].upper()
+
+    return Response({
+        'code': f'MERGED-{short_id}',
+        'student_name': student_name,
+        'courses': courses,
+        'issued_at': latest.issuedAt.isoformat(),
+    })
