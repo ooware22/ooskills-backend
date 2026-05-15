@@ -1889,8 +1889,11 @@ def download_certificate_pdf_view(request, code):
         'score': float(cert.score) if cert.score is not None else None,
     }
 
+    lang = request.query_params.get('lang', 'en')
+    theme = request.query_params.get('theme', 'light')
+
     try:
-        pdf_bytes = generate_certificate_pdf(code, prefetched_data=prefetched)
+        pdf_bytes = generate_certificate_pdf(code, prefetched_data=prefetched, lang=lang, theme=theme)
         response = HttpResponse(pdf_bytes, content_type='application/pdf')
         response['Content-Disposition'] = f'attachment; filename="OOSkills_Certificate_{code}.pdf"'
         return response
@@ -1941,8 +1944,11 @@ def download_merged_certificate_pdf_view(request):
         'issued_at': latest.issuedAt.isoformat(),
     }
 
+    lang = request.query_params.get('lang', 'en')
+    theme = request.query_params.get('theme', 'light')
+
     try:
-        pdf_bytes = generate_merged_certificate_pdf(str(user.id), prefetched_data=prefetched)
+        pdf_bytes = generate_merged_certificate_pdf(str(user.id), prefetched_data=prefetched, lang=lang, theme=theme)
         safe_name = student_name.replace(' ', '_')
         response = HttpResponse(pdf_bytes, content_type='application/pdf')
         response['Content-Disposition'] = f'attachment; filename="OOSkills_MergedBadge_{safe_name}.pdf"'

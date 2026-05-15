@@ -45,7 +45,12 @@ def _encode_data(data: dict) -> str:
 # Public API
 # ---------------------------------------------------------------------------
 
-def generate_certificate_pdf(certificate_code: str, prefetched_data: dict | None = None) -> bytes:
+def generate_certificate_pdf(
+    certificate_code: str,
+    prefetched_data: dict | None = None,
+    lang: str = "en",
+    theme: str = "light",
+) -> bytes:
     """
     Entry point for a single-course certificate.
 
@@ -53,16 +58,24 @@ def generate_certificate_pdf(certificate_code: str, prefetched_data: dict | None
     the `d` query parameter so the export page can render immediately
     without calling back to the Django API (which would deadlock the
     single-threaded dev server).
+
+    lang and theme are forwarded as query parameters so the export page
+    renders the certificate in the user's chosen language and theme.
     """
     frontend_url = _get_frontend_url()
+    params = {"lang": lang, "theme": theme}
     if prefetched_data:
-        encoded = _encode_data(prefetched_data)
-        target_url = f"{frontend_url}/export/certificate/{certificate_code}?d={encoded}"
-    else:
-        target_url = f"{frontend_url}/export/certificate/{certificate_code}"
+        params["d"] = _encode_data(prefetched_data)
+    query_string = urlencode(params)
+    target_url = f"{frontend_url}/export/certificate/{certificate_code}?{query_string}"
     return _render_pdf(target_url)
 
-def generate_merged_certificate_pdf(user_uuid: str, prefetched_data: dict | None = None) -> bytes:
+def generate_merged_certificate_pdf(
+    user_uuid: str,
+    prefetched_data: dict | None = None,
+    lang: str = "en",
+    theme: str = "light",
+) -> bytes:
     """
     Entry point for a merged multi-course badge.
 
@@ -70,11 +83,14 @@ def generate_merged_certificate_pdf(user_uuid: str, prefetched_data: dict | None
     the `d` query parameter so the export page can render immediately
     without calling back to the Django API (which would deadlock the
     single-threaded dev server).
+
+    lang and theme are forwarded as query parameters so the export page
+    renders the certificate in the user's chosen language and theme.
     """
     frontend_url = _get_frontend_url()
+    params = {"uid": user_uuid, "lang": lang, "theme": theme}
     if prefetched_data:
-        encoded = _encode_data(prefetched_data)
-        target_url = f"{frontend_url}/export/merged-certificate?uid={user_uuid}&d={encoded}"
-    else:
-        target_url = f"{frontend_url}/export/merged-certificate?uid={user_uuid}"
+        params["d"] = _encode_data(prefetched_data)
+    query_string = urlencode(params)
+    target_url = f"{frontend_url}/export/merged-certificate?{query_string}"
     return _render_pdf(target_url)
