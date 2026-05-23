@@ -130,6 +130,10 @@ class Course(models.Model):
         'Réduction (%)', default=0,
         help_text='Discount percentage (0-100). Price is auto-calculated from originalPrice.',
     )
+    is_free = models.BooleanField(
+        'Cours gratuit', default=False,
+        help_text='Cochez pour rendre ce cours gratuit (prix = 0 DZD).',
+    )
     language = models.CharField(max_length=60, default='English')
     certificate = models.BooleanField('Certificat inclus', default=True)
     lastUpdated = models.DateField('Dernière MàJ', null=True, blank=True)
@@ -176,7 +180,9 @@ class Course(models.Model):
         # (when price is not explicitly provided by the frontend).
         # The frontend sends the computed price directly to support both
         # percentage and fixed-DA discount types.
-        if self.originalPrice and self.discount is not None and not self.price:
+        if self.is_free:
+            self.price = 0
+        elif self.originalPrice and self.discount is not None and not self.price:
             self.price = round(self.originalPrice * (1 - self.discount / 100))
         super().save(*args, **kwargs)
 

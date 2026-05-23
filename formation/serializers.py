@@ -220,6 +220,7 @@ class CourseListSerializer(serializers.ModelSerializer):
             'price', 'originalPrice', 'discount', 'description',
             'prerequisites', 'whatYouLearn', 'sections', 'materials',
             'language', 'certificate', 'lastUpdated', 'status', 'totalSlides',
+            'is_free',
         ]
 
     def get_totalSlides(self, obj):
@@ -246,6 +247,7 @@ class CourseDetailSerializer(serializers.ModelSerializer):
             'prerequisites', 'whatYouLearn', 'sections', 'materials',
             'language', 'certificate', 'lastUpdated', 'status',
             'audioBasePath', 'totalModules', 'totalSlides', 'totalQuizQuestions',
+            'is_free',
         ]
 
     def get_totalModules(self, obj):
@@ -279,7 +281,7 @@ class CourseWriteSerializer(serializers.ModelSerializer):
             'price', 'originalPrice', 'discount', 'description',
             'prerequisites', 'whatYouLearn',
             'language', 'certificate', 'lastUpdated',
-            'status', 'audioBasePath',
+            'status', 'audioBasePath', 'is_free',
         ]
 
 

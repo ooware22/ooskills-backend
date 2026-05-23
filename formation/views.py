@@ -960,8 +960,8 @@ class OrderViewSet(
                 referral_balance=F('referral_balance') - wallet_discount,
             )
 
-        # Free order → mark paid immediately and auto-enroll
-        if total == 0:
+        # Free order (or below Chargily's 10 DZD minimum) → mark paid immediately and auto-enroll
+        if total < 10:
             order.status = OrderStatus.PAID
             order.save(update_fields=['status'])
             for course in courses:

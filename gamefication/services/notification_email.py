@@ -85,7 +85,7 @@ def send_level_up_email(user, new_level: int, total_xp: int):
                     </p>
                 </div>
                 <div class="footer">
-                    <p>© 2024 OOSkills. Tous droits réservés.</p>
+                    <p>© 2026 OOSkills. Tous droits réservés.</p>
                 </div>
             </div>
         </body>
@@ -103,7 +103,7 @@ Continuez votre apprentissage pour débloquer encore plus de niveaux et de badge
 
 Voir mon profil : {frontend_url}/dashboard
 
-© 2024 OOSkills. Tous droits réservés.
+© 2026 OOSkills. Tous droits réservés.
         """
 
         logger.info(f"[EMAIL] Sending level-up email to {user.email} (level {new_level})")
@@ -185,7 +185,7 @@ def send_certificate_email(user, course_title: str, score: float, certificate_co
                     </p>
                 </div>
                 <div class="footer">
-                    <p>© 2024 OOSkills. Tous droits réservés.</p>
+                    <p>© 2026 OOSkills. Tous droits réservés.</p>
                 </div>
             </div>
         </body>
@@ -205,7 +205,7 @@ Vous pouvez consulter et télécharger votre certificat depuis votre tableau de 
 
 Voir mes certificats : {frontend_url}/dashboard/certificates
 
-© 2024 OOSkills. Tous droits réservés.
+© 2026 OOSkills. Tous droits réservés.
         """
 
         logger.info(f"[EMAIL] Sending certificate email to {user.email} for {course_title}")
