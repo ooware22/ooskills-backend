@@ -35,7 +35,9 @@ ALLOWED_HOSTS = [
     '.onrender.com',  # All Render subdomains
     'ooskills-backend.onrender.com',
     '[::1]', 
-    'host.docker.internal'
+    'host.docker.internal',
+    'api.ooskills.com',
+    '178.104.214.238'
       # Your specific Render domain
 ]
 
@@ -322,10 +324,9 @@ FACEBOOK_APP_SECRET = os.environ.get('FACEBOOK_APP_SECRET', '')
 # =============================================================================
 
 CORS_ALLOWED_ORIGINS = [
-    "http://localhost:3000",  # Next.js dev server
-    "http://127.0.0.1:3000",
-    "https://ooskills-frontend.vercel.app"
-
+    "http://localhost:3000",
+    "https://ooskills.com",            # ← Your frontend domain
+    "https://www.ooskills.com",
 ]
 
 CORS_ALLOW_CREDENTIALS = True
