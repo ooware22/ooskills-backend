@@ -31,7 +31,9 @@ router.register(r'promo-codes', views.PromoCodeViewSet, basename='promo-code')
 router.register(r'gifts', views.CourseGiftViewSet, basename='gift')
 
 urlpatterns = [
-    path('', include(router.urls)),
     path('chargily/webhook/', csrf_exempt(views.ChargilyWebhookView.as_view()), name='chargily-webhook'),
-    path('certificates/export/<str:code>/pdf/', views.download_certificate_pdf, name='export_certificate_pdf'),
+    path('certificates/export/merged/pdf/', views.download_merged_certificate_pdf_view, name='export_merged_certificate_pdf'),
+    path('certificates/export/<str:code>/pdf/', views.download_certificate_pdf_view, name='export_certificate_pdf'),
+    path('certificates/merged-export/', views.merged_certificate_export_data, name='merged_certificate_export_data'),
+    path('', include(router.urls)),
 ]
