@@ -17,6 +17,17 @@ from formation.models import (
 logger = logging.getLogger(__name__)
 BULK_CREATE_BATCH_SIZE = 200
 
+# All accepted media extensions for ZIP import resolution
+AUDIO_EXTENSIONS = [
+    'mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a', 'wma',
+    'opus', 'webm', 'amr', 'mid', 'midi',
+]
+SLIDE_EXTENSIONS = [
+    'webp', 'png', 'jpg', 'jpeg', 'gif', 'bmp', 'tiff', 'tif',
+    'svg', 'avif', 'heic', 'heif', 'ico',
+    'mp4', 'webm', 'mov', 'avi', 'mkv', 'ogv',
+]
+
 
 def _save_with_db_retry(instance, update_fields=None, retries=1):
     """Retry save once after refreshing stale DB connections."""
@@ -264,6 +275,9 @@ def normalize_formation(formation):
 
                 if 'chapters' in lvl_data:
                     chapters = lvl_data.get('chapters', [])
+                    # Track slide index across ALL chapters in this level
+                    # (WEB-format ZIPs use flat slide_01..slide_NN naming)
+                    global_slide_idx = 0
                     for ch in chapters:
                         chapter_num = str(ch.get('chapter_num', ch.get('chapter', 0))).zfill(2)
                         ch_title = ch.get('title', f"Chapter {chapter_num}")
@@ -271,11 +285,16 @@ def normalize_formation(formation):
                         mapped_slides = []
                         for idx, s in enumerate(ch.get('slides', [])):
                             slide_num = str(s.get('slide_num', idx + 1)).zfill(2)
-                            # Infer expected audio and bg paths natively
+                            global_slide_idx += 1
+                            # Infer expected audio path (chapter-based naming)
                             if 'audio' not in s:
                                 s['audio'] = f"{lvl_id.lower()}/ch{chapter_num}_s{slide_num}.mp3"
+                            # Infer expected slide bg path
+                            # Primary: flat sequential naming with .webp (WEB format)
+                            # Fallback: chapter-based naming with .png (legacy format)
                             if 'bg' not in s:
-                                s['bg'] = f"{lvl_id.lower()}/ch{chapter_num}_s{slide_num}.png"
+                                s['bg'] = f"{lvl_id.lower()}/slide_{str(global_slide_idx).zfill(2)}.webp"
+                                s['bg_fallback'] = f"{lvl_id.lower()}/ch{chapter_num}_s{slide_num}.png"
 
                             s_title = s.get('title', f"Slide {idx + 1}")
                             if 'title' not in s:
@@ -622,6 +641,9 @@ def import_course_from_zip(zip_file_path, category=None, instructor=None, temp_d
                 
                 # ── Create modules/lessons ───────────────────────────────
                 modules_data = module_data.get('modules', [])
+                # Track global slide index across all modules in this section
+                # for flat slide_NN naming fallback resolution
+                global_slide_idx = 0
                 for mod_idx, m_data in enumerate(modules_data):
                     mod_title = m_data.get('title', f"Module {mod_idx+1}")
                     module_obj = Module.objects.create(
@@ -635,6 +657,7 @@ def import_course_from_zip(zip_file_path, category=None, instructor=None, temp_d
                     pending_lesson_files = []
 
                     for slide_idx, slide_data in enumerate(slides):
+                        global_slide_idx += 1
                         lesson_title = slide_data.get('title', f"{mod_title} - Slide {slide_idx+1}")
 
                         duration_seconds = slide_data.get('duration_seconds') or slide_data.get('duration', 0)
@@ -665,24 +688,66 @@ def import_course_from_zip(zip_file_path, category=None, instructor=None, temp_d
 
                         audio_filename = slide_data.get('audio')
                         slide_bg = slide_data.get('bg')
+                        slide_bg_fallback = slide_data.get('bg_fallback')
                         audio_path_final = None
                         bg_path_final = None
 
+                        # ── Resolve audio file path ──
                         if audio_filename:
                             ap = os.path.join(base_dir, 'audio', audio_filename)
                             if os.path.exists(ap):
                                 audio_path_final = ap
+                            else:
+                                # Try alternative extensions
+                                audio_stem = os.path.splitext(audio_filename)[0]
+                                for ext in AUDIO_EXTENSIONS:
+                                    alt = os.path.join(base_dir, 'audio', f"{audio_stem}.{ext}")
+                                    if os.path.exists(alt):
+                                        audio_path_final = alt
+                                        audio_filename = f"{audio_stem}.{ext}"
+                                        break
 
+                        # ── Resolve slide bg file path ──
                         if slide_bg:
                             bp = os.path.join(base_dir, 'slides', slide_bg)
                             if not os.path.exists(bp):
                                 level_dir = slide_bg.split('/')[0] if '/' in slide_bg else ''
-                                ext = slide_bg.split('.')[-1] if '.' in slide_bg else 'png'
-                                fallback_name = f"slide_{str(slide_idx + 1).zfill(2)}.{ext}"
-                                fallback_path = os.path.join(base_dir, 'slides', level_dir, fallback_name)
-                                if os.path.exists(fallback_path):
-                                    bp = fallback_path
-                                    slide_bg = f"{level_dir}/{fallback_name}" if level_dir else fallback_name
+
+                                # Strategy 1: Try primary path with alternative extensions
+                                bg_stem = os.path.splitext(os.path.basename(slide_bg))[0]
+                                for ext in SLIDE_EXTENSIONS:
+                                    alt_path = os.path.join(base_dir, 'slides', level_dir, f"{bg_stem}.{ext}")
+                                    if os.path.exists(alt_path):
+                                        bp = alt_path
+                                        slide_bg = f"{level_dir}/{bg_stem}.{ext}" if level_dir else f"{bg_stem}.{ext}"
+                                        break
+
+                                # Strategy 2: Flat slide_NN naming with multiple extensions
+                                if not os.path.exists(bp):
+                                    for ext in SLIDE_EXTENSIONS:
+                                        fallback_name = f"slide_{str(global_slide_idx).zfill(2)}.{ext}"
+                                        fallback_path = os.path.join(base_dir, 'slides', level_dir, fallback_name)
+                                        if os.path.exists(fallback_path):
+                                            bp = fallback_path
+                                            slide_bg = f"{level_dir}/{fallback_name}" if level_dir else fallback_name
+                                            break
+
+                                # Strategy 3: Try bg_fallback path from normalize (chapter-based naming)
+                                if not os.path.exists(bp) and slide_bg_fallback:
+                                    fbp = os.path.join(base_dir, 'slides', slide_bg_fallback)
+                                    if os.path.exists(fbp):
+                                        bp = fbp
+                                        slide_bg = slide_bg_fallback
+                                    else:
+                                        fb_stem = os.path.splitext(os.path.basename(slide_bg_fallback))[0]
+                                        fb_level = slide_bg_fallback.split('/')[0] if '/' in slide_bg_fallback else level_dir
+                                        for ext in SLIDE_EXTENSIONS:
+                                            alt = os.path.join(base_dir, 'slides', fb_level, f"{fb_stem}.{ext}")
+                                            if os.path.exists(alt):
+                                                bp = alt
+                                                slide_bg = f"{fb_level}/{fb_stem}.{ext}" if fb_level else f"{fb_stem}.{ext}"
+                                                break
+
                             if os.path.exists(bp):
                                 bg_path_final = bp
 
