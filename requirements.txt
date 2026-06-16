@@ -131,5 +131,6 @@ django-redis==6.0.0
 redis==7.4.0
 Pillow>=11.0.0
 boto3>=1.35.0
+mutagen>=1.47.0
 
 playwright==1.59.0

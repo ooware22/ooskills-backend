@@ -29,6 +29,18 @@ SLIDE_EXTENSIONS = [
 ]
 
 
+def _get_audio_duration(file_path):
+    """Return the duration of an audio file in seconds (int), or 0 on failure."""
+    try:
+        from mutagen import File as MutagenFile
+        audio = MutagenFile(file_path)
+        if audio is not None and audio.info is not None:
+            return int(audio.info.length)
+    except Exception:
+        pass
+    return 0
+
+
 def _save_with_db_retry(instance, update_fields=None, retries=1):
     """Retry save once after refreshing stale DB connections."""
     for attempt in range(retries + 1):
@@ -756,6 +768,7 @@ def import_course_from_zip(zip_file_path, category=None, instructor=None, temp_d
                             'audio_name': os.path.basename(audio_filename) if audio_filename else None,
                             'bg_path': bg_path_final,
                             'bg_name': os.path.basename(slide_bg) if slide_bg else None,
+                            'slide_idx': slide_idx,  # index for duration backfill
                         })
 
                     _bulk_create_with_db_retry(
@@ -782,6 +795,17 @@ def import_course_from_zip(zip_file_path, category=None, instructor=None, temp_d
                             )
                             continue
                         if pending['audio_path'] or pending['bg_path']:
+                            # Auto-detect audio duration if not already set
+                            detected_duration = 0
+                            if pending['audio_path'] and lesson.duration_seconds == 0:
+                                detected_duration = _get_audio_duration(pending['audio_path'])
+                                if detected_duration > 0:
+                                    lesson.duration_seconds = detected_duration
+                                    try:
+                                        lesson.save(update_fields=['duration_seconds'])
+                                    except Exception as dur_err:
+                                        logger.warning("Could not save detected duration for lesson %s: %s", lesson.id, dur_err)
+
                             lesson_file_mappings.append({
                                 'lesson_id': lesson.id,
                                 'audio_path': pending['audio_path'],
