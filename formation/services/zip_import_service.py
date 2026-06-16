@@ -759,5 +759,5 @@ def _start_upload_thread(temp_dir, should_cleanup, lesson_file_mappings):
         args=(temp_dir, should_cleanup, lesson_file_mappings),
         name='zip-import-upload-worker',
     )
-    thread.daemon = True
+    thread.daemon = False
     thread.start()

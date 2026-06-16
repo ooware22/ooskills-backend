@@ -434,7 +434,7 @@ class CourseViewSet(DBRetryReadMixin, viewsets.ModelViewSet):
                     os.remove(temp_zip_path)
         
         # Fire-and-forget: import runs in background, request returns immediately.
-        thread = threading.Thread(target=_run_import, name='zip-import-main', daemon=True)
+        thread = threading.Thread(target=_run_import, name='zip-import-main', daemon=False)
         thread.start()
         
         return Response(

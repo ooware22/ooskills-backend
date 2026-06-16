@@ -37,6 +37,7 @@ ALLOWED_HOSTS = [
     '[::1]', 
     'host.docker.internal',
     'api.ooskills.com',
+    'upload.ooskills.com',
     '178.104.214.238'
       # Your specific Render domain
 ]

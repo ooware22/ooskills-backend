@@ -28,6 +28,63 @@ R2_UPLOAD_SEMAPHORE = threading.Semaphore(8)
 # Thread-local storage for reusing boto3 clients within a thread.
 _thread_local = threading.local()
 
+# Bucket used for temporary uploads (ZIP imports, etc.)
+# Uses existing 'materials' bucket with a key prefix since the R2 token
+# may not have CreateBucket permissions for a separate bucket.
+R2_TEMP_BUCKET = 'materials'
+R2_TEMP_PREFIX = 'temp-uploads/'
+
+
+def generate_presigned_upload_url(object_key, content_type='application/zip', expires_in=3600):
+    """
+    Generate a presigned PUT URL for direct browser-to-R2 upload.
+
+    This bypasses Cloudflare's proxy size limit (100 MB on free plan)
+    because the browser uploads directly to the R2 endpoint.
+
+    Returns a dict with 'upload_url', 'object_key', and 'expires_in'.
+    """
+    client = _get_r2_client()
+    # NOTE: Do NOT include ContentType in Params — different browsers report
+    # different MIME types for .zip files (application/zip, application/x-zip-compressed,
+    # application/octet-stream) which causes SignatureDoesNotMatch errors.
+    url = client.generate_presigned_url(
+        'put_object',
+        Params={
+            'Bucket': R2_TEMP_BUCKET,
+            'Key': object_key,
+        },
+        ExpiresIn=expires_in,
+    )
+    return {
+        'upload_url': url,
+        'object_key': object_key,
+        'bucket': R2_TEMP_BUCKET,
+        'expires_in': expires_in,
+    }
+
+
+def download_r2_object_to_file(bucket, key, dest_path):
+    """
+    Download an object from R2 to a local file path.
+
+    Used after the browser uploads a ZIP directly to R2 —
+    the backend downloads it locally for processing.
+    """
+    client = _get_r2_client()
+    client.download_file(bucket, key, dest_path)
+    logger.info('R2 download OK  bucket=%s key=%s → %s', bucket, key, dest_path)
+
+
+def delete_r2_object(bucket, key):
+    """Delete a single object from R2 (cleanup after processing)."""
+    try:
+        client = _get_r2_client()
+        client.delete_object(Bucket=bucket, Key=key)
+        logger.info('R2 cleanup OK  bucket=%s key=%s', bucket, key)
+    except Exception:
+        logger.exception('R2 cleanup FAILED  bucket=%s key=%s', bucket, key)
+
 
 def _get_r2_client():
     """Return a boto3 S3 client configured for Cloudflare R2, cached per-thread."""
