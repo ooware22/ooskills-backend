@@ -181,7 +181,7 @@ MEDIA_URL = 'media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
 # Large file upload settings (ZIP imports can be hundreds of MB)
-DATA_UPLOAD_MAX_MEMORY_SIZE = 500 * 1024 * 1024   # 500 MB — max request body
+DATA_UPLOAD_MAX_MEMORY_SIZE = 1024 * 1024 * 1024   # 1 GB — max request body
 FILE_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024     # 10 MB — files larger than this are streamed to disk
 FILE_UPLOAD_TEMP_DIR = str(BASE_DIR / 'tmp_uploads')
 

@@ -35,31 +35,32 @@ R2_TEMP_BUCKET = 'materials'
 R2_TEMP_PREFIX = 'temp-uploads/'
 
 
-def generate_presigned_upload_url(object_key, content_type='application/zip', expires_in=3600):
+def generate_presigned_upload_url(object_key, bucket=R2_TEMP_BUCKET, content_type=None, expires_in=3600):
     """
     Generate a presigned PUT URL for direct browser-to-R2 upload.
 
-    This bypasses Cloudflare's proxy size limit (100 MB on free plan)
+    This bypasses Cloudflare's proxy size limit and server memory limits
     because the browser uploads directly to the R2 endpoint.
 
-    Returns a dict with 'upload_url', 'object_key', and 'expires_in'.
+    Returns a dict with 'upload_url', 'object_key', 'bucket', and 'expires_in'.
     """
     client = _get_r2_client()
-    # NOTE: Do NOT include ContentType in Params — different browsers report
-    # different MIME types for .zip files (application/zip, application/x-zip-compressed,
-    # application/octet-stream) which causes SignatureDoesNotMatch errors.
+    params = {
+        'Bucket': bucket,
+        'Key': object_key,
+    }
+    if content_type:
+        params['ContentType'] = content_type
+
     url = client.generate_presigned_url(
         'put_object',
-        Params={
-            'Bucket': R2_TEMP_BUCKET,
-            'Key': object_key,
-        },
+        Params=params,
         ExpiresIn=expires_in,
     )
     return {
         'upload_url': url,
         'object_key': object_key,
-        'bucket': R2_TEMP_BUCKET,
+        'bucket': bucket,
         'expires_in': expires_in,
     }
 
@@ -306,11 +307,7 @@ class SupabaseAudioStorage(Storage):
     def _save(self, name, content):
         file_content = content.read()
         content_type = _guess_content_type(name, AUDIO_CONTENT_TYPES)
-        threading.Thread(
-            target=_upload_to_r2_with_semaphore,
-            args=(self.bucket_name, name, file_content, content_type),
-            daemon=True,
-        ).start()
+        _upload_to_r2_with_semaphore(self.bucket_name, name, file_content, content_type)
         return name
 
     def url(self, name):
@@ -374,16 +371,9 @@ class SupabaseImageStorage(Storage):
         return ('formation.storage.SupabaseImageStorage', [], {})
 
     def _save(self, name, content):
-        """Read file bytes, fire off background upload, return path immediately."""
         file_content = content.read()
         content_type = _guess_content_type(name, IMAGE_CONTENT_TYPES)
-
-        threading.Thread(
-            target=_upload_to_r2_with_semaphore,
-            args=(self.bucket_name, name, file_content, content_type),
-            daemon=True,
-        ).start()
-
+        _upload_to_r2_with_semaphore(self.bucket_name, name, file_content, content_type)
         return name
 
     def url(self, name):
@@ -455,13 +445,7 @@ class SupabaseMaterialStorage(Storage):
     def _save(self, name, content):
         file_content = content.read()
         content_type = _guess_content_type(name, MATERIAL_CONTENT_TYPES)
-
-        threading.Thread(
-            target=_upload_to_r2_with_semaphore,
-            args=(self.bucket_name, name, file_content, content_type),
-            daemon=True,
-        ).start()
-
+        _upload_to_r2_with_semaphore(self.bucket_name, name, file_content, content_type)
         return name
 
     def url(self, name):
@@ -530,13 +514,7 @@ class SupabaseDiapositiveStorage(Storage):
     def _save(self, name, content):
         file_content = content.read()
         content_type = _guess_content_type(name, DIAPOSITIVE_CONTENT_TYPES)
-
-        threading.Thread(
-            target=_upload_to_r2_with_semaphore,
-            args=(self.bucket_name, name, file_content, content_type),
-            daemon=True,
-        ).start()
-
+        _upload_to_r2_with_semaphore(self.bucket_name, name, file_content, content_type)
         return name
 
     def url(self, name):

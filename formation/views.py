@@ -4,6 +4,7 @@ Formation Views — DRF ViewSets for all formation endpoints.
 
 import json
 import logging
+import uuid
 from uuid import UUID
 
 from django.core.cache import cache
@@ -17,7 +18,7 @@ from django.views import View
 from rest_framework import viewsets, status, mixins
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework.permissions import IsAuthenticated, AllowAny, IsAdminUser
 from rest_framework.throttling import ScopedRateThrottle
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import OrderingFilter
@@ -62,6 +63,8 @@ from formation.services.final_quiz_service import (
     FinalQuizNotConfigured, FinalQuizLimitExceeded, CourseNotCompleted as FQCourseNotCompleted,
 )
 from formation.chargily_service import create_chargily_checkout, client as chargily_client
+
+from formation.storage import generate_presigned_upload_url
 
 from formation.cache import (
     course_list_key, course_detail_key, category_list_key,
@@ -370,19 +373,26 @@ class CourseViewSet(DBRetryReadMixin, viewsets.ModelViewSet):
             return Response({'detail': ADMIN_ONLY_MSG}, status=status.HTTP_403_FORBIDDEN)
             
         zip_file = request.FILES.get('zip_file')
-        if not zip_file:
-            return Response({'detail': 'No zip_file provided.'}, status=status.HTTP_400_BAD_REQUEST)
+        temp_key = request.data.get('temp_key')
+        if not zip_file and not temp_key:
+            return Response({'detail': 'No zip_file or temp_key provided.'}, status=status.HTTP_400_BAD_REQUEST)
             
         import tempfile, os
         from formation.services.zip_import_service import parse_zip_plan
+        from formation.storage import download_r2_object_to_file, delete_r2_object
         
         fd, temp_zip_path = tempfile.mkstemp(suffix='.zip', prefix='ooskills_up_')
         try:
-            with os.fdopen(fd, 'wb') as f:
-                for chunk in zip_file.chunks():
-                    f.write(chunk)
+            if temp_key:
+                os.close(fd)
+                download_r2_object_to_file('materials', temp_key, temp_zip_path)
+            else:
+                with os.fdopen(fd, 'wb') as f:
+                    for chunk in zip_file.chunks():
+                        f.write(chunk)
             plan = parse_zip_plan(temp_zip_path)
         except Exception as e:
+            logger.exception("Error parsing zip: %s", e)
             return Response({'detail': f'Error parsing zip: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
         finally:
             if temp_zip_path and os.path.exists(temp_zip_path):
@@ -397,23 +407,28 @@ class CourseViewSet(DBRetryReadMixin, viewsets.ModelViewSet):
             return Response({'detail': ADMIN_ONLY_MSG}, status=status.HTTP_403_FORBIDDEN)
             
         zip_file = request.FILES.get('zip_file')
+        temp_key = request.data.get('temp_key')
         category_id = request.data.get('category_id')
         instructor_id = request.data.get('instructor_id')
         
-        if not zip_file:
-            return Response({'detail': 'No zip_file provided.'}, status=status.HTTP_400_BAD_REQUEST)
+        if not zip_file and not temp_key:
+            return Response({'detail': 'No zip_file or temp_key provided.'}, status=status.HTTP_400_BAD_REQUEST)
             
         import tempfile, os, threading
         from formation.services.zip_import_service import import_course_from_zip
+        from formation.storage import download_r2_object_to_file, delete_r2_object
         from django.contrib.auth import get_user_model
         User = get_user_model()
         
-        # Save the uploaded ZIP to a temp file so we can release the request.
         fd, temp_zip_path = tempfile.mkstemp(suffix='.zip', prefix='ooskills_up_')
         try:
-            with os.fdopen(fd, 'wb') as f:
-                for chunk in zip_file.chunks():
-                    f.write(chunk)
+            if temp_key:
+                os.close(fd)
+                download_r2_object_to_file('materials', temp_key, temp_zip_path)
+            else:
+                with os.fdopen(fd, 'wb') as f:
+                    for chunk in zip_file.chunks():
+                        f.write(chunk)
         except Exception as e:
             if os.path.exists(temp_zip_path):
                 os.remove(temp_zip_path)
@@ -432,6 +447,8 @@ class CourseViewSet(DBRetryReadMixin, viewsets.ModelViewSet):
             finally:
                 if temp_zip_path and os.path.exists(temp_zip_path):
                     os.remove(temp_zip_path)
+                if temp_key:
+                    delete_r2_object('materials', temp_key)
         
         # Fire-and-forget: import runs in background, request returns immediately.
         thread = threading.Thread(target=_run_import, name='zip-import-main', daemon=False)
@@ -2008,3 +2025,92 @@ def merged_certificate_export_data(request):
         'courses': courses,
         'issued_at': latest.issuedAt.isoformat(),
     })
+
+
+# =============================================================================
+# DIRECT R2 PRESIGNED UPLOAD API VIEWS
+# =============================================================================
+
+@api_view(['POST'])
+@permission_classes([IsAdminUser])
+def presigned_upload_url_view(request):
+    """
+    Generate a presigned PUT URL for direct browser-to-R2 upload.
+
+    Payload:
+    {
+      "filename": "lecture1.mp3",
+      "bucket": "audios",       # audios | diapositive | materials | images | avatars
+      "course_id": "optional-course-uuid",
+      "content_type": "audio/mpeg" # optional
+    }
+    """
+    filename = request.data.get('filename', '')
+    bucket = request.data.get('bucket', 'materials')
+    course_id = request.data.get('course_id') or 'global'
+    content_type = request.data.get('content_type')
+
+    VALID_BUCKETS = ['audios', 'diapositive', 'materials', 'images', 'avatars']
+    if bucket not in VALID_BUCKETS:
+        return Response(
+            {'detail': f'Invalid bucket. Must be one of: {VALID_BUCKETS}'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else 'bin'
+    object_key = f"{course_id}/{uuid.uuid4().hex}.{ext}"
+
+    res = generate_presigned_upload_url(
+        object_key=object_key,
+        bucket=bucket,
+        content_type=content_type,
+        expires_in=3600,
+    )
+    return Response(res)
+
+
+@api_view(['POST'])
+@permission_classes([IsAdminUser])
+def presigned_batch_upload_url_view(request):
+    """
+    Generate multiple presigned PUT URLs for bulk browser uploads.
+
+    Payload:
+    {
+      "course_id": "course-uuid",
+      "files": [
+        {"filename": "01.mp3", "bucket": "audios", "content_type": "audio/mpeg"},
+        {"filename": "01.webp", "bucket": "diapositive", "content_type": "image/webp"}
+      ]
+    }
+    """
+    course_id = request.data.get('course_id') or 'global'
+    files = request.data.get('files', [])
+
+    if not isinstance(files, list):
+        return Response({'detail': 'files must be a list'}, status=status.HTTP_400_BAD_REQUEST)
+
+    VALID_BUCKETS = ['audios', 'diapositive', 'materials', 'images', 'avatars']
+    plan = []
+
+    for item in files:
+        fname = item.get('filename', 'file')
+        bkt = item.get('bucket', 'materials')
+        if bkt not in VALID_BUCKETS:
+            bkt = 'materials'
+        ctype = item.get('content_type')
+
+        ext = fname.rsplit('.', 1)[-1].lower() if '.' in fname else 'bin'
+        key = f"{course_id}/{uuid.uuid4().hex}.{ext}"
+
+        res = generate_presigned_upload_url(
+            object_key=key,
+            bucket=bkt,
+            content_type=ctype,
+            expires_in=3600,
+        )
+        res['original_filename'] = fname
+        plan.append(res)
+
+    return Response({'course_id': course_id, 'plan': plan})
+

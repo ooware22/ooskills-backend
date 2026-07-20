@@ -29,7 +29,7 @@ from pathlib import Path
 
 # ── Load .env ─────────────────────────────────────────────────────────────────
 from dotenv import load_dotenv
-load_dotenv(Path(__file__).parent / '.env')
+load_dotenv(Path(__file__).parent / 'ooskillsbackend' / '.env')
 
 # ── Validate dependencies ─────────────────────────────────────────────────────
 missing_deps = []
@@ -81,7 +81,7 @@ BUCKET_MAP: dict[str, str] = {
     'audios':      'audios',
     'images':      'images',
     'materials':   'materials',
-    'Diapositive': 'Diapositive',
+    'Diapositive': 'diapositive',
     'avatars':     'avatars',
 }
 

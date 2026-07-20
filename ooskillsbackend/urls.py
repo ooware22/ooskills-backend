@@ -30,11 +30,14 @@ def ping():
     return JsonResponse({"status": "ok"})
 
 
+from ooskillsbackend.health import health_check
+
 urlpatterns = [
     path('admin/', admin.site.urls),
 
     # API endpoints (users, content, formation)
     path('api/', include([
+        path('health/', health_check, name='health_check'),
         path('', include('users.urls')),
         path('', include('content.urls')),
         path('formation/', include('formation.urls')),

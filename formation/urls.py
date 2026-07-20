@@ -35,5 +35,7 @@ urlpatterns = [
     path('certificates/export/merged/pdf/', views.download_merged_certificate_pdf_view, name='export_merged_certificate_pdf'),
     path('certificates/export/<str:code>/pdf/', views.download_certificate_pdf_view, name='export_certificate_pdf'),
     path('certificates/merged-export/', views.merged_certificate_export_data, name='merged_certificate_export_data'),
+    path('admin/presigned-upload-url/', views.presigned_upload_url_view, name='presigned_upload_url'),
+    path('admin/presigned-batch/', views.presigned_batch_upload_url_view, name='presigned_batch_upload_url'),
     path('', include(router.urls)),
 ]
