@@ -14,7 +14,7 @@ from datetime import timedelta
 
 from users.models import User
 from formation.models import (
-    Category, Course, CourseStatus, Section, Lesson,
+    Category, Course, CourseStatus, Section, Module, Lesson,
     Enrollment, EnrollmentStatus, LessonProgress,
     Quiz, QuizQuestion, ShareToken, ShareVisibility,
     Certificate,
@@ -56,13 +56,18 @@ class FormationTestBase(TestCase):
             title='Module 1',
             type='module', sequence=10,
         )
-        self.lesson1 = Lesson.objects.create(
+        self.module = Module.objects.create(
             section=self.section,
+            title='Module 1',
+            sequence=1,
+        )
+        self.lesson1 = Lesson.objects.create(
+            module=self.module,
             title='Lesson 1',
             sequence=1, duration_seconds=300,
         )
         self.lesson2 = Lesson.objects.create(
-            section=self.section,
+            module=self.module,
             title='Lesson 2',
             sequence=2, duration_seconds=300,
         )
@@ -409,12 +414,34 @@ class FinalQuizTests(FormationTestBase):
             ).exists()
         )
 
-    def test_max_attempts_enforced(self):
-        """Should raise FinalQuizLimitExceeded after max attempts."""
+    def test_max_attempts_enforced_after_pass(self):
+        """Once passed, further attempts should raise FinalQuizLimitExceeded."""
         from formation.services.final_quiz_service import (
             generate_final_quiz_questions, submit_final_quiz,
             FinalQuizLimitExceeded,
         )
+        from formation.models import QuizQuestion
+
+        self.final_quiz.max_attempts = 1
+        self.final_quiz.save()
+
+        questions = generate_final_quiz_questions(self.enrollment)
+        question_ids = [q['id'] for q in questions]
+        answers = {
+            qid: QuizQuestion.objects.get(id=qid).correct_answer
+            for qid in question_ids
+        }
+        attempt = submit_final_quiz(self.enrollment, answers, question_ids)
+        self.assertTrue(attempt.passed)
+
+        # Second attempt should fail — already passed and max attempts reached
+        with self.assertRaises(FinalQuizLimitExceeded):
+            generate_final_quiz_questions(self.enrollment)
+
+    def test_max_attempts_resets_if_never_passed(self):
+        """Failing attempts should reset once max_attempts is hit, so the
+        student isn't locked out permanently until they pass."""
+        from formation.services.final_quiz_service import generate_final_quiz_questions, submit_final_quiz
 
         self.final_quiz.max_attempts = 1
         self.final_quiz.save()
@@ -422,11 +449,12 @@ class FinalQuizTests(FormationTestBase):
         questions = generate_final_quiz_questions(self.enrollment)
         question_ids = [q['id'] for q in questions]
         answers = {qid: 999 for qid in question_ids}
-        submit_final_quiz(self.enrollment, answers, question_ids)
+        attempt = submit_final_quiz(self.enrollment, answers, question_ids)
+        self.assertFalse(attempt.passed)
 
-        # Second attempt should fail
-        with self.assertRaises(FinalQuizLimitExceeded):
-            generate_final_quiz_questions(self.enrollment)
+        # Never passed — attempts should be reset, allowing another try.
+        questions_again = generate_final_quiz_questions(self.enrollment)
+        self.assertEqual(len(questions_again), 2)
 
     def test_remaining_attempts(self):
         """get_final_quiz_remaining_attempts returns correct count."""

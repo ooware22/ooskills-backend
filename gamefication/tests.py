@@ -12,7 +12,7 @@ from django.utils import timezone
 
 from users.models import User
 from formation.models import (
-    Category, Course, CourseStatus, Section, Lesson,
+    Category, Course, CourseStatus, Section, Module, Lesson,
     Enrollment, EnrollmentStatus, LessonProgress,
     Quiz, QuizQuestion, QuizAttempt,
 )
@@ -57,12 +57,16 @@ class GamificationTestBase(TestCase):
             course=self.course, title='Module 1',
             type='module', sequence=10,
         )
+        self.module = Module.objects.create(
+            section=self.section, title='Module 1',
+            sequence=1,
+        )
         self.lesson1 = Lesson.objects.create(
-            section=self.section, title='Lesson 1',
+            module=self.module, title='Lesson 1',
             sequence=1, duration_seconds=300,
         )
         self.lesson2 = Lesson.objects.create(
-            section=self.section, title='Lesson 2',
+            module=self.module, title='Lesson 2',
             sequence=2, duration_seconds=300,
         )
         self.enrollment = Enrollment.objects.create(
