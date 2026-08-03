@@ -116,7 +116,7 @@ DATABASES = {
         'HOST': os.environ.get('DB_HOST'),
         'PORT': os.environ.get('DB_PORT', '6543'),
         'OPTIONS': {
-            'sslmode': 'require',
+            'sslmode': os.environ.get('DB_SSLMODE', 'require'),
             'connect_timeout': int(os.environ.get('DB_CONNECT_TIMEOUT', '10')),
             'keepalives': 1,
             'keepalives_idle': int(os.environ.get('DB_KEEPALIVES_IDLE', '30')),
