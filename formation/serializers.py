@@ -15,7 +15,7 @@ from formation.models import (
     Enrollment, FinalQuiz, FinalQuizAttempt, FinalQuizAudio,
     Lesson, LessonNote, LessonProgress, Order, OrderItem,
     PromoCode, PromoCodeUsage,
-    QuizAttempt, Quiz, QuizQuestion, Section, Module, ShareToken,
+    QuizAttempt, Quiz, QuizQuestion, Section, Module, ShareToken, Wishlist,
 )
 
 
@@ -309,6 +309,17 @@ class EnrollmentSerializer(serializers.ModelSerializer):
 
 class EnrollmentCreateSerializer(serializers.Serializer):
     courseId = serializers.UUIDField()
+
+
+# ─── Wishlist ────────────────────────────────────────────────────────────────
+
+class WishlistSerializer(serializers.ModelSerializer):
+    course = CourseListSerializer(read_only=True)
+
+    class Meta:
+        model = Wishlist
+        fields = ['id', 'course', 'created_at']
+        read_only_fields = ['id', 'created_at']
 
 
 # ─── Lesson Progress ────────────────────────────────────────────────────────

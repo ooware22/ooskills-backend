@@ -1029,6 +1029,33 @@ class CourseRating(models.Model):
 
 
 # =============================================================================
+# WISHLIST
+# =============================================================================
+
+class Wishlist(models.Model):
+    """A course a user has saved to look at later (heart/wishlist button)."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+        related_name='wishlist_items',
+    )
+    course = models.ForeignKey(
+        Course, on_delete=models.CASCADE, related_name='wishlisted_by',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = 'Liste de souhaits'
+        verbose_name_plural = 'Listes de souhaits'
+        unique_together = ['user', 'course']
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'{self.user} ♥ {self.course}'
+
+
+# =============================================================================
 # PROMO CODE
 # =============================================================================
 

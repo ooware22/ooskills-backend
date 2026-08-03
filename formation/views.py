@@ -30,7 +30,7 @@ from formation.models import (
     FinalQuiz, FinalQuizAttempt, FinalQuizAudio, GiftStatus,
     Lesson, LessonNote, LessonProgress, Order, OrderItem, OrderStatus,
     PaymentMethod, PromoCode, PromoCodeUsage,
-    QuizAttempt, Quiz, QuizQuestion, Section, Module, ShareToken,
+    QuizAttempt, Quiz, QuizQuestion, Section, Module, ShareToken, Wishlist,
 )
 from formation.serializers import (
     CategorySerializer, CertificateSerializer,
@@ -49,6 +49,7 @@ from formation.serializers import (
     QuizQuestionSerializer,
     SectionDetailSerializer, SectionSerializer, ModuleSerializer,
     ShareTokenCreateSerializer, ShareTokenSerializer,
+    WishlistSerializer,
 )
 from formation.permissions import IsAdminOrReadOnly, IsOwnerOrAdmin, IsEnrolledStudent
 from formation.filters import CourseFilter, EnrollmentFilter, OrderFilter
@@ -365,6 +366,17 @@ class CourseViewSet(DBRetryReadMixin, viewsets.ModelViewSet):
         course = self.get_object()
         ratings = CourseRating.objects.filter(course=course).select_related('user')
         return Response(CourseRatingSerializer(ratings, many=True).data)
+
+    @extend_schema(summary='Toggle wishlist status for a course')
+    @action(detail=True, methods=['post'], url_path='toggle-wishlist',
+            permission_classes=[IsAuthenticated])
+    def toggle_wishlist(self, request, slug=None):
+        """Add the course to the user's wishlist, or remove it if already saved."""
+        course = self.get_object()
+        obj, created = Wishlist.objects.get_or_create(user=request.user, course=course)
+        if not created:
+            obj.delete()
+        return Response({'wishlisted': created})
 
     @extend_schema(summary='Preview Course Zip (Admin)')
     @action(detail=False, methods=['post'], url_path='import-zip-preview', permission_classes=[IsAdminOrReadOnly])
@@ -700,6 +712,20 @@ class EnrollmentViewSet(
             EnrollmentSerializer(enrollment).data,
             status=status.HTTP_201_CREATED,
         )
+
+
+# ─── Wishlist ───────────────────────────────────────────────────────────────
+
+class WishlistViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
+    """Read-only: lists the current user's saved courses. Mutation happens via
+    Course.toggle-wishlist to keep add/remove as a single idempotent call."""
+    serializer_class = WishlistSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return Wishlist.objects.filter(
+            user=self.request.user,
+        ).select_related('course', 'course__category')
 
 
 # ─── Lesson Progress ────────────────────────────────────────────────────────

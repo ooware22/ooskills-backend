@@ -9,6 +9,7 @@ from formation.models import (
     Category, Certificate, Course, CourseMaterial, Enrollment,
     Lesson, LessonNote, LessonProgress, Order, OrderItem,
     QuizAttempt, Quiz, QuizQuestion, Section, Module, ShareToken,
+    Wishlist,
 )
 
 
@@ -226,6 +227,13 @@ class QuizQuestionAdmin(admin.ModelAdmin):
 class EnrollmentAdmin(admin.ModelAdmin):
     list_display = ['user', 'course', 'progress', 'status', 'enrolled_at']
     list_filter = ['status']
+    raw_id_fields = ['user', 'course']
+    search_fields = ['user__email']
+
+
+@admin.register(Wishlist)
+class WishlistAdmin(admin.ModelAdmin):
+    list_display = ['user', 'course', 'created_at']
     raw_id_fields = ['user', 'course']
     search_fields = ['user__email']
 
