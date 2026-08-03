@@ -184,6 +184,7 @@ MEDIA_ROOT = BASE_DIR / 'media'
 DATA_UPLOAD_MAX_MEMORY_SIZE = 1024 * 1024 * 1024   # 1 GB — max request body
 FILE_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024     # 10 MB — files larger than this are streamed to disk
 FILE_UPLOAD_TEMP_DIR = str(BASE_DIR / 'tmp_uploads')
+os.makedirs(FILE_UPLOAD_TEMP_DIR, exist_ok=True)
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
