@@ -31,8 +31,9 @@ from formation.models import (
     Lesson, LessonNote, LessonProgress, Order, OrderItem, OrderStatus,
     PaymentMethod, PromoCode, PromoCodeUsage,
     QuizAttempt, Quiz, QuizQuestion, Section, Module, ShareToken, Wishlist,
-    MarketingCampaign,
+    MarketingCampaign, get_mismatched_paid_order_ids,
 )
+from content.models import SiteSettings
 from formation.serializers import (
     CategorySerializer, CertificateSerializer,
     CourseDetailSerializer, CourseListSerializer, CourseWriteSerializer,
@@ -233,16 +234,50 @@ class CourseViewSet(DBRetryReadMixin, viewsets.ModelViewSet):
             return CourseWriteSerializer
         return CourseListSerializer
 
+    def _apply_live_pricing(self, items):
+        """
+        Overlay fresh, per-request pricing onto (possibly cached) serialized course data.
+
+        Price, campaign status and welcome-buyer status are personalized per user and
+        change whenever a campaign is edited — they must never be served straight out of
+        the shared course_list/course_detail cache, since that cache is keyed by
+        slug/query only and would otherwise leak one user's (or one moment's) price to
+        everyone else for up to COURSE_LIST_TTL/COURSE_DETAIL_TTL seconds.
+        """
+        user = self.request.user if self.request.user.is_authenticated else None
+        is_admin = bool(user and user.is_admin)
+        ids = [item['id'] for item in items if item.get('id')]
+        if not ids:
+            return
+        courses = Course.objects.in_bulk(ids)
+        campaign = MarketingCampaign.get_active_campaign()
+        is_welcome_applied = bool(
+            user and not user.orders.filter(status='paid').exists()
+        )
+        welcome_discount_percentage = SiteSettings.get_settings().welcome_discount_percentage
+        for item in items:
+            course = courses.get(item.get('id'))
+            if course is None:
+                continue
+            item['price'] = course.price if is_admin else course.get_price_for_user(user)
+            item['is_campaign_active'] = campaign is not None
+            item['campaign_discount'] = campaign.discount_percentage if campaign else 0
+            item['is_welcome_applied'] = is_welcome_applied
+            item['welcome_discount_percentage'] = welcome_discount_percentage
+
     def list(self, request, *args, **kwargs):
         is_admin = request.user.is_authenticated and request.user.is_admin
         key = course_list_key(dict(request.query_params), is_admin=is_admin)
         cached = cache.get(key)
         if cached is not None:
+            self._apply_live_pricing(cached.get('results', cached) if isinstance(cached, dict) else cached)
             return Response(cached)
         response = self._run_with_db_retry(
             lambda: super(CourseViewSet, self).list(request, *args, **kwargs)
         )
         cache.set(key, response.data, COURSE_LIST_TTL)
+        data = response.data
+        self._apply_live_pricing(data.get('results', data) if isinstance(data, dict) else data)
         return response
 
     def retrieve(self, request, *args, **kwargs):
@@ -251,12 +286,14 @@ class CourseViewSet(DBRetryReadMixin, viewsets.ModelViewSet):
         if key:
             cached = cache.get(key)
             if cached is not None:
+                self._apply_live_pricing([cached])
                 return Response(cached)
         response = self._run_with_db_retry(
             lambda: super(CourseViewSet, self).retrieve(request, *args, **kwargs)
         )
         if key:
             cache.set(key, response.data, COURSE_DETAIL_TTL)
+        self._apply_live_pricing([response.data])
         return response
 
     def destroy(self, request, *args, **kwargs):
@@ -901,7 +938,9 @@ class OrderViewSet(
     def get_queryset(self):
         user = self.request.user
         if user.is_admin:
-            return Order.objects.all().prefetch_related('items__course')
+            return Order.objects.all().select_related('user').prefetch_related(
+                'items__course', 'user__enrollments',
+            )
         return Order.objects.filter(user=user).prefetch_related('items__course')
 
     def get_serializer_class(self):
@@ -1099,6 +1138,53 @@ class OrderViewSet(
             },
             status=status.HTTP_202_ACCEPTED,
         )
+
+    @action(detail=True, methods=['post'], url_path='force-enroll')
+    def force_enroll(self, request, pk=None):
+        """
+        Admin-only: directly grant the buyer access to every course in this
+        order, bypassing Chargily entirely.
+
+        For cases confirm-payment can't fix — payment made outside Chargily,
+        or a checkout Chargily has no record of anymore.
+        """
+        if not (request.user.is_authenticated and request.user.is_admin):
+            return Response({'detail': ADMIN_ONLY_MSG}, status=status.HTTP_403_FORBIDDEN)
+
+        order = self.get_object()
+        newly_enrolled = []
+        for item in order.items.select_related('course'):
+            try:
+                enroll_user(order.user, item.course)
+                newly_enrolled.append(item.course.slug)
+            except AlreadyEnrolled:
+                pass
+
+        logger.info(
+            f'Admin {request.user.email} force-enrolled order {order.id} '
+            f'into: {newly_enrolled or "(already fully enrolled)"}'
+        )
+        return Response(OrderSerializer(order, context={'request': request}).data)
+
+    @action(detail=True, methods=['post'], url_path='mark-refunded')
+    def mark_refunded(self, request, pk=None):
+        """Admin-only: mark an order as refunded. Does not revoke course access."""
+        if not (request.user.is_authenticated and request.user.is_admin):
+            return Response({'detail': ADMIN_ONLY_MSG}, status=status.HTTP_403_FORBIDDEN)
+
+        order = self.get_object()
+        order.status = OrderStatus.REFUNDED
+        order.save(update_fields=['status', 'updated_at'])
+        logger.info(f'Admin {request.user.email} marked order {order.id} as refunded')
+        return Response(OrderSerializer(order, context={'request': request}).data)
+
+    @action(detail=False, methods=['get'], url_path='mismatch-stats')
+    def mismatch_stats(self, request):
+        """Admin-only: count of paid orders missing an enrollment for a purchased course."""
+        if not (request.user.is_authenticated and request.user.is_admin):
+            return Response({'detail': ADMIN_ONLY_MSG}, status=status.HTTP_403_FORBIDDEN)
+
+        return Response({'count': get_mismatched_paid_order_ids().count()})
 
 
 # ─── Final Quiz ─────────────────────────────────────────────────────────────────────

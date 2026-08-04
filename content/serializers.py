@@ -539,6 +539,7 @@ class PublicSiteSettingsSerializer(serializers.ModelSerializer):
             'site_name', 'site_tagline', 'default_language', 'google_analytics_id',
             'meta_title', 'meta_description', 'meta_keywords', 'og_image',
             'dark_mode_enabled', 'notifications_enabled', 'maintenance_mode', 'registration_enabled',
+            'welcome_discount_percentage',
             'facebook_url', 'twitter_url', 'instagram_url', 'linkedin_url', 'youtube_url',
             'contact_email', 'contact_phone', 'contact_address'
         ]
@@ -557,6 +558,7 @@ class AdminSiteSettingsSerializer(serializers.ModelSerializer):
             'id', 'site_name', 'site_tagline', 'default_language', 'google_analytics_id',
             'meta_title', 'meta_description', 'meta_keywords', 'og_image', 'og_image_url', 'og_image_display',
             'dark_mode_enabled', 'notifications_enabled', 'maintenance_mode', 'registration_enabled',
+            'welcome_discount_percentage',
             'facebook_url', 'twitter_url', 'instagram_url', 'linkedin_url', 'youtube_url',
             'contact_email', 'contact_phone', 'contact_address',
             'created_at', 'updated_at'

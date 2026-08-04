@@ -12,12 +12,13 @@ from rest_framework import serializers
 
 from formation.models import (
     Category, Certificate, Course, CourseMaterial, CourseGift, CourseRating,
-    Enrollment, FinalQuiz, FinalQuizAttempt, FinalQuizAudio,
-    Lesson, LessonNote, LessonProgress, Order, OrderItem,
+    Enrollment, EnrollmentStatus, FinalQuiz, FinalQuizAttempt, FinalQuizAudio,
+    Lesson, LessonNote, LessonProgress, Order, OrderItem, OrderStatus,
     PromoCode, PromoCodeUsage,
     QuizAttempt, Quiz, QuizQuestion, Section, Module, ShareToken, Wishlist,
     MarketingCampaign,
 )
+from content.models import SiteSettings
 
 
 COURSE_TITLE_SOURCE = 'course.title'
@@ -233,19 +234,26 @@ class CourseListSerializer(serializers.ModelSerializer):
         rep = super().to_representation(instance)
         request = self.context.get('request')
         user = request.user if request else None
-        
-        rep['price'] = instance.get_price_for_user(user)
-        
+
+        # Admins manage the raw base price (originalPrice/discount/price) — they should
+        # never see a customer-personalized price (campaign + welcome discount) in the
+        # course-management panel, since it reuses this same catalog endpoint.
+        if user and user.is_authenticated and user.is_admin:
+            rep['price'] = instance.price
+        else:
+            rep['price'] = instance.get_price_for_user(user)
+
         # Add campaign details to response
         campaign = MarketingCampaign.get_active_campaign()
         rep['is_campaign_active'] = campaign is not None
         rep['campaign_discount'] = campaign.discount_percentage if campaign else 0
-        
+
         is_welcome_applied = False
         if user and user.is_authenticated:
             is_welcome_applied = not user.orders.filter(status='paid').exists()
         rep['is_welcome_applied'] = is_welcome_applied
-        
+        rep['welcome_discount_percentage'] = SiteSettings.get_settings().welcome_discount_percentage
+
         return rep
 
 
@@ -290,19 +298,23 @@ class CourseDetailSerializer(serializers.ModelSerializer):
         rep = super().to_representation(instance)
         request = self.context.get('request')
         user = request.user if request else None
-        
-        rep['price'] = instance.get_price_for_user(user)
-        
+
+        if user and user.is_authenticated and user.is_admin:
+            rep['price'] = instance.price
+        else:
+            rep['price'] = instance.get_price_for_user(user)
+
         # Add campaign details to response
         campaign = MarketingCampaign.get_active_campaign()
         rep['is_campaign_active'] = campaign is not None
         rep['campaign_discount'] = campaign.discount_percentage if campaign else 0
-        
+
         is_welcome_applied = False
         if user and user.is_authenticated:
             is_welcome_applied = not user.orders.filter(status='paid').exists()
         rep['is_welcome_applied'] = is_welcome_applied
-        
+        rep['welcome_discount_percentage'] = SiteSettings.get_settings().welcome_discount_percentage
+
         return rep
 
 
@@ -524,22 +536,59 @@ class FinalQuizAttemptSerializer(serializers.ModelSerializer):
 
 class OrderItemSerializer(serializers.ModelSerializer):
     course_title = serializers.CharField(source=COURSE_TITLE_SOURCE, read_only=True)
+    course_slug = serializers.CharField(source='course.slug', read_only=True)
+    is_enrolled = serializers.SerializerMethodField()
 
     class Meta:
         model = OrderItem
-        fields = ['id', 'course', 'course_title', 'price']
+        fields = ['id', 'course', 'course_slug', 'course_title', 'price', 'is_enrolled']
+
+    def get_is_enrolled(self, obj):
+        # When listing via OrderSerializer, the parent already prefetched and
+        # passed down the buyer's enrolled course ids — avoids an N+1 query.
+        enrolled_course_ids = self.context.get('enrolled_course_ids')
+        if enrolled_course_ids is not None:
+            return obj.course_id in enrolled_course_ids
+        return Enrollment.objects.filter(
+            user_id=obj.order.user_id, course_id=obj.course_id,
+        ).exclude(status=EnrollmentStatus.CANCELLED).exists()
 
 
 class OrderSerializer(serializers.ModelSerializer):
-    items = OrderItemSerializer(many=True, read_only=True)
+    items = serializers.SerializerMethodField()
+    user_email = serializers.EmailField(source='user.email', read_only=True)
+    user_name = serializers.CharField(source='user.full_name', read_only=True)
+    is_mismatched = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
         fields = [
-            'id', 'user', 'total', 'status',
-            'paymentMethod', 'paymentRef', 'checkout_url',
-            'items', 'created_at', 'updated_at',
+            'id', 'user', 'user_email', 'user_name', 'total', 'status',
+            'paymentMethod', 'paymentRef', 'checkout_url', 'chargily_checkout_id',
+            'items', 'is_mismatched', 'created_at', 'updated_at',
         ]
+
+    def _enrolled_course_ids(self, obj):
+        # `user.enrollments` is prefetched by OrderViewSet.get_queryset for admins,
+        # so this is a free in-memory lookup, not a per-order query.
+        return {
+            e.course_id for e in obj.user.enrollments.all()
+            if e.status != EnrollmentStatus.CANCELLED
+        }
+
+    def get_items(self, obj):
+        enrolled_course_ids = self._enrolled_course_ids(obj)
+        return OrderItemSerializer(
+            obj.items.all(), many=True,
+            context={**self.context, 'enrolled_course_ids': enrolled_course_ids},
+        ).data
+
+    def get_is_mismatched(self, obj):
+        if obj.status != OrderStatus.PAID:
+            return False
+        enrolled_course_ids = self._enrolled_course_ids(obj)
+        order_course_ids = {item.course_id for item in obj.items.all()}
+        return not order_course_ids.issubset(enrolled_course_ids)
         read_only_fields = ['id', 'user', 'total', 'status', 'created_at', 'updated_at']
 
 

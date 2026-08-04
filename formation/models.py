@@ -26,6 +26,7 @@ from content.models import (
     SUPPORTED_LANGUAGES,
     DEFAULT_LANGUAGE,
     FALLBACK_ORDER,
+    SiteSettings,
 )
 
 UNLIMITED_HELP_TEXT = '0 = unlimited'
@@ -190,25 +191,43 @@ class Course(models.Model):
     def get_price_for_user(self, user=None):
         """
         Calculate price for a user dynamically based on active campaigns and first-time buyer welcome offers.
+
+        Discounts combine as follows:
+        1. The course's own promo % and the active campaign's % are ADDED into a single
+           total percentage, applied once to originalPrice (not compounded on each other).
+        2. First-time buyers then get an additional 20% off on top of that result.
         """
         if self.is_free:
             return 0
-            
-        base_price = self.price or self.originalPrice or 0
-        
-        # 1. Apply active campaign discount
+
+        base_price = self.originalPrice or self.price or 0
+        if base_price <= 0:
+            return self.price or 0
+
+        # Course's own promo, expressed as an effective % off originalPrice
+        # (derived from price/originalPrice rather than the raw `discount` field,
+        # since that field can hold a fixed-DA amount instead of a percentage).
+        course_discount_percent = 0
+        if self.price and self.price < base_price:
+            course_discount_percent = (1 - self.price / base_price) * 100
+
+        # 1. Add the active campaign's percentage to the course's own promo percentage
+        total_discount_percent = course_discount_percent
         campaign = MarketingCampaign.get_active_campaign()
         if campaign and campaign.discount_percentage:
-            base_price = round(base_price * (1 - campaign.discount_percentage / 100))
-            
-        # 2. Apply first-time buyer welcome discount (20% off)
+            total_discount_percent += campaign.discount_percentage
+
+        total_discount_percent = min(total_discount_percent, 100)
+        price = round(base_price * (1 - total_discount_percent / 100))
+
+        # 2. Apply first-time buyer welcome discount (admin-configurable, extra % off)
         if user and user.is_authenticated:
-            # Query user orders dynamically to avoid circular imports
             has_paid_orders = user.orders.filter(status='paid').exists()
             if not has_paid_orders:
-                base_price = round(base_price * 0.80) # 20% welcome discount
-                
-        return base_price
+                welcome_pct = min(SiteSettings.get_settings().welcome_discount_percentage, 100)
+                price = round(price * (1 - welcome_pct / 100))
+
+        return max(price, 0)
 
 
 
@@ -891,6 +910,27 @@ class OrderItem(models.Model):
 
     def __str__(self):
         return f'{self.course} @ {self.price} DZD'
+
+
+def get_mismatched_paid_order_ids():
+    """
+    IDs of paid orders where the buyer is missing an active Enrollment for at
+    least one purchased course — e.g. the Chargily webhook never arrived and
+    nobody happened to reload the success page to trigger the resync fallback.
+    """
+    from django.db.models import Exists, OuterRef
+
+    unfulfilled_items = OrderItem.objects.filter(
+        order__status=OrderStatus.PAID,
+    ).exclude(
+        Exists(
+            Enrollment.objects.filter(
+                user_id=OuterRef('order__user_id'),
+                course_id=OuterRef('course_id'),
+            ).exclude(status=EnrollmentStatus.CANCELLED)
+        )
+    )
+    return unfulfilled_items.values_list('order_id', flat=True).distinct()
 
 
 # =============================================================================

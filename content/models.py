@@ -19,7 +19,7 @@ Translation JSON structure:
 """
 
 from django.db import models
-from django.core.validators import URLValidator
+from django.core.validators import URLValidator, MinValueValidator, MaxValueValidator
 from django.core.exceptions import ValidationError
 import json
 
@@ -558,7 +558,14 @@ class SiteSettings(TimeStampedModel):
         default=True,
         help_text='Allow new user registrations'
     )
-    
+
+    # ----- Pricing -----
+    welcome_discount_percentage = models.PositiveIntegerField(
+        default=20,
+        validators=[MinValueValidator(0), MaxValueValidator(100)],
+        help_text='Extra discount % applied on top for a user\'s first purchase (no prior paid orders)'
+    )
+
     # ----- Social Media Links -----
     facebook_url = models.URLField(max_length=500, blank=True)
     twitter_url = models.URLField(max_length=500, blank=True)
