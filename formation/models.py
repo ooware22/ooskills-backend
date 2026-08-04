@@ -12,6 +12,7 @@ import uuid
 import secrets
 from django.conf import settings
 from django.db import models
+from django.core.validators import MinValueValidator, MaxValueValidator
 from django.utils import timezone
 from django.utils.text import slugify
 
@@ -185,6 +186,31 @@ class Course(models.Model):
         elif self.originalPrice and self.discount is not None and not self.price:
             self.price = round(self.originalPrice * (1 - self.discount / 100))
         super().save(*args, **kwargs)
+
+    def get_price_for_user(self, user=None):
+        """
+        Calculate price for a user dynamically based on active campaigns and first-time buyer welcome offers.
+        """
+        if self.is_free:
+            return 0
+            
+        base_price = self.price or self.originalPrice or 0
+        
+        # 1. Apply active campaign discount
+        campaign = MarketingCampaign.get_active_campaign()
+        if campaign and campaign.discount_percentage:
+            base_price = round(base_price * (1 - campaign.discount_percentage / 100))
+            
+        # 2. Apply first-time buyer welcome discount (20% off)
+        if user and user.is_authenticated:
+            # Query user orders dynamically to avoid circular imports
+            has_paid_orders = user.orders.filter(status='paid').exists()
+            if not has_paid_orders:
+                base_price = round(base_price * 0.80) # 20% welcome discount
+                
+        return base_price
+
+
 
 
 # =============================================================================
@@ -1227,6 +1253,80 @@ class CourseGift(models.Model):
         if self.expires_at and timezone.now() > self.expires_at:
             return False
         return True
+
+
+# =============================================================================
+# MARKETING CAMPAIGN
+# =============================================================================
+
+class MarketingCampaign(models.Model, TranslatableFieldMixin):
+    """
+    Site-wide marketing campaign (e.g. Flash Sale, Black Friday).
+    Only one active campaign can run at a time (enforced via model clean / save logic).
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.CharField('Nom de la campagne', max_length=200)
+    title = models.JSONField(
+        'Titre (Traduit)',
+        default=dict,
+        validators=[validate_translation_json],
+        help_text='{"fr": "Flash Sale!", "en": "Flash Sale!", "ar": "عرض محدود!"}'
+    )
+    subtitle = models.JSONField(
+        'Sous-titre (Traduit)',
+        default=dict,
+        validators=[validate_translation_json],
+        blank=True
+    )
+    discount_percentage = models.PositiveIntegerField(
+        'Pourcentage de réduction (%)',
+        default=0,
+        validators=[MinValueValidator(0), MaxValueValidator(100)]
+    )
+    is_active = models.BooleanField('Actif', default=True, db_index=True)
+    start_date = models.DateTimeField('Date de début', null=True, blank=True)
+    end_date = models.DateTimeField('Date de fin', null=True, blank=True, db_index=True)
+    show_countdown = models.BooleanField('Afficher le compte à rebours', default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'Campagne Marketing'
+        verbose_name_plural = 'Campagnes Marketing'
+
+    def __str__(self):
+        return f"{self.name} (-{self.discount_percentage}%)"
+
+    @classmethod
+    def get_active_campaign(cls):
+        from django.core.cache import cache
+        campaign = cache.get('active_marketing_campaign')
+        if campaign is None:
+            # Query db for active campaigns
+            campaign_obj = cls.objects.filter(is_active=True).first()
+            if campaign_obj:
+                now = timezone.now()
+                # Check validity dates
+                if campaign_obj.start_date and now < campaign_obj.start_date:
+                    campaign_obj = None
+                elif campaign_obj.end_date and now > campaign_obj.end_date:
+                    campaign_obj = None
+            cache.set('active_marketing_campaign', campaign_obj or 'none', 300) # 5 minutes TTL
+            campaign = campaign_obj or 'none'
+        return None if campaign == 'none' else campaign
+
+    def save(self, *args, **kwargs):
+        if self.is_active:
+            # Set all other campaigns to inactive
+            MarketingCampaign.objects.filter(is_active=True).exclude(pk=self.pk).update(is_active=False)
+            
+        super().save(*args, **kwargs)
+        
+        # Clear campaign cache
+        from django.core.cache import cache
+        cache.delete('active_marketing_campaign')
+        cache.delete('public_landing_page') # Clear landing page cache since campaign status changes prices
+
 
 
 # =============================================================================

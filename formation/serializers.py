@@ -16,6 +16,7 @@ from formation.models import (
     Lesson, LessonNote, LessonProgress, Order, OrderItem,
     PromoCode, PromoCodeUsage,
     QuizAttempt, Quiz, QuizQuestion, Section, Module, ShareToken, Wishlist,
+    MarketingCampaign,
 )
 
 
@@ -228,6 +229,26 @@ class CourseListSerializer(serializers.ModelSerializer):
             return obj._total_slides
         return Lesson.objects.filter(module__section__course=obj).count()
 
+    def to_representation(self, instance):
+        rep = super().to_representation(instance)
+        request = self.context.get('request')
+        user = request.user if request else None
+        
+        rep['price'] = instance.get_price_for_user(user)
+        
+        # Add campaign details to response
+        campaign = MarketingCampaign.get_active_campaign()
+        rep['is_campaign_active'] = campaign is not None
+        rep['campaign_discount'] = campaign.discount_percentage if campaign else 0
+        
+        is_welcome_applied = False
+        if user and user.is_authenticated:
+            is_welcome_applied = not user.orders.filter(status='paid').exists()
+        rep['is_welcome_applied'] = is_welcome_applied
+        
+        return rep
+
+
 
 class CourseDetailSerializer(serializers.ModelSerializer):
     """Detailed course with full section/lesson/quiz data for the player."""
@@ -264,6 +285,26 @@ class CourseDetailSerializer(serializers.ModelSerializer):
         if hasattr(obj, '_total_quiz_questions'):
             return obj._total_quiz_questions
         return QuizQuestion.objects.filter(quiz__section__course=obj).count()
+
+    def to_representation(self, instance):
+        rep = super().to_representation(instance)
+        request = self.context.get('request')
+        user = request.user if request else None
+        
+        rep['price'] = instance.get_price_for_user(user)
+        
+        # Add campaign details to response
+        campaign = MarketingCampaign.get_active_campaign()
+        rep['is_campaign_active'] = campaign is not None
+        rep['campaign_discount'] = campaign.discount_percentage if campaign else 0
+        
+        is_welcome_applied = False
+        if user and user.is_authenticated:
+            is_welcome_applied = not user.orders.filter(status='paid').exists()
+        rep['is_welcome_applied'] = is_welcome_applied
+        
+        return rep
+
 
 
 class CourseWriteSerializer(serializers.ModelSerializer):
@@ -680,3 +721,16 @@ class CourseGiftSendSerializer(serializers.Serializer):
 class CourseGiftClaimSerializer(serializers.Serializer):
     """Input for claiming a gift."""
     gift_code = serializers.CharField(max_length=30)
+
+
+# ─── Marketing Campaign ──────────────────────────────────────────────────────
+
+class MarketingCampaignSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = MarketingCampaign
+        fields = [
+            'id', 'name', 'title', 'subtitle', 
+            'discount_percentage', 'is_active', 
+            'start_date', 'end_date', 'show_countdown'
+        ]
+

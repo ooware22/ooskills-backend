@@ -30,6 +30,8 @@ router.register(r'final-quiz', views.FinalQuizViewSet, basename='final-quiz')
 router.register(r'course-materials', views.CourseMaterialViewSet, basename='course-material')
 router.register(r'promo-codes', views.PromoCodeViewSet, basename='promo-code')
 router.register(r'gifts', views.CourseGiftViewSet, basename='gift')
+router.register(r'marketing-campaigns', views.MarketingCampaignViewSet, basename='marketing-campaign')
+
 
 urlpatterns = [
     path('chargily/webhook/', csrf_exempt(views.ChargilyWebhookView.as_view()), name='chargily-webhook'),

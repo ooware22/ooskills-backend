@@ -31,6 +31,7 @@ from formation.models import (
     Lesson, LessonNote, LessonProgress, Order, OrderItem, OrderStatus,
     PaymentMethod, PromoCode, PromoCodeUsage,
     QuizAttempt, Quiz, QuizQuestion, Section, Module, ShareToken, Wishlist,
+    MarketingCampaign,
 )
 from formation.serializers import (
     CategorySerializer, CertificateSerializer,
@@ -49,7 +50,7 @@ from formation.serializers import (
     QuizQuestionSerializer,
     SectionDetailSerializer, SectionSerializer, ModuleSerializer,
     ShareTokenCreateSerializer, ShareTokenSerializer,
-    WishlistSerializer,
+    WishlistSerializer, MarketingCampaignSerializer,
 )
 from formation.permissions import IsAdminOrReadOnly, IsOwnerOrAdmin, IsEnrolledStudent
 from formation.filters import CourseFilter, EnrollmentFilter, OrderFilter
@@ -921,7 +922,7 @@ class OrderViewSet(
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        subtotal = sum(c.price for c in courses)
+        subtotal = sum(c.get_price_for_user(request.user) for c in courses)
 
         # ── Apply promo code ──────────────────────────────────────────────────
         promo_code_str = ser.validated_data.get('promo_code', '').strip().upper()
@@ -980,7 +981,7 @@ class OrderViewSet(
 
         for course in courses:
             OrderItem.objects.create(
-                order=order, course=course, price=course.price,
+                order=order, course=course, price=course.get_price_for_user(request.user),
             )
 
         # Record promo usage and increment counter
@@ -2139,4 +2140,29 @@ def presigned_batch_upload_url_view(request):
         plan.append(res)
 
     return Response({'course_id': course_id, 'plan': plan})
+
+
+# ─── Marketing Campaign ──────────────────────────────────────────────────────
+
+@extend_schema_view(
+    list=extend_schema(summary='List all marketing campaigns (Admin only)'),
+    retrieve=extend_schema(summary='Retrieve campaign details'),
+)
+class MarketingCampaignViewSet(viewsets.ModelViewSet):
+    queryset = MarketingCampaign.objects.all()
+    serializer_class = MarketingCampaignSerializer
+    permission_classes = [IsAdminOrReadOnly]
+
+    @action(detail=False, methods=['get'], permission_classes=[AllowAny])
+    def active(self, request):
+        """
+        GET /api/formation/marketing-campaigns/active/
+        
+        Retrieve the currently active marketing campaign (with countdown details).
+        """
+        campaign = MarketingCampaign.get_active_campaign()
+        if not campaign:
+            return Response(None, status=status.HTTP_200_OK)
+        return Response(MarketingCampaignSerializer(campaign).data)
+
 

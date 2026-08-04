@@ -9,7 +9,7 @@ from formation.models import (
     Category, Certificate, Course, CourseMaterial, Enrollment,
     Lesson, LessonNote, LessonProgress, Order, OrderItem,
     QuizAttempt, Quiz, QuizQuestion, Section, Module, ShareToken,
-    Wishlist,
+    Wishlist, MarketingCampaign,
 )
 
 
@@ -278,3 +278,23 @@ class ShareTokenAdmin(admin.ModelAdmin):
     list_display = ['token', 'course', 'created_by', 'visibility', 'max_uses', 'uses_count', 'is_active']
     list_filter = ['visibility', 'is_active']
     raw_id_fields = ['course', 'created_by']
+
+
+@admin.register(MarketingCampaign)
+class MarketingCampaignAdmin(admin.ModelAdmin):
+    list_display = ['name', 'discount_percentage', 'is_active', 'start_date', 'end_date', 'show_countdown']
+    list_filter = ['is_active', 'show_countdown']
+    search_fields = ['name']
+    fieldsets = (
+        (None, {
+            'fields': ('name', 'discount_percentage', 'is_active')
+        }),
+        ('Planification', {
+            'fields': ('start_date', 'end_date', 'show_countdown')
+        }),
+        ('Titres traduits (i18n)', {
+            'fields': ('title', 'subtitle'),
+            'description': 'Format: {"fr": "...", "en": "...", "ar": "..."}'
+        }),
+    )
+
