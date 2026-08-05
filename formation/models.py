@@ -12,6 +12,7 @@ import uuid
 import secrets
 from django.conf import settings
 from django.db import models
+from django.contrib.postgres.indexes import GinIndex
 from django.core.validators import MinValueValidator, MaxValueValidator
 from django.utils import timezone
 from django.utils.text import slugify
@@ -163,6 +164,8 @@ class Course(models.Model):
         indexes = [
             models.Index(fields=['status', 'level']),
             models.Index(fields=['category', 'status']),
+            GinIndex(fields=['title'], name='course_title_trgm_idx', opclasses=['gin_trgm_ops']),
+            GinIndex(fields=['description'], name='course_desc_trgm_idx', opclasses=['gin_trgm_ops']),
         ]
 
     def __str__(self):
@@ -887,6 +890,9 @@ class Order(models.Model):
         verbose_name = 'Commande'
         verbose_name_plural = 'Commandes'
         ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['status', '-created_at'], name='order_status_created_idx'),
+        ]
 
     def __str__(self):
         return f'Order {self.id} — {self.user}'
