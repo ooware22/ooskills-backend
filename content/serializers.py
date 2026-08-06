@@ -9,6 +9,7 @@ from rest_framework import serializers
 from .models import (
     HeroSection, FeaturesSection, FeatureItem,
     Partner, FAQSection, FAQItem, Testimonial, SiteSettings,
+    ContactMessage,
     SUPPORTED_LANGUAGES, DEFAULT_LANGUAGE, FALLBACK_ORDER
 )
 
@@ -564,6 +565,27 @@ class AdminSiteSettingsSerializer(serializers.ModelSerializer):
             'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at', 'og_image_display']
-    
+
     def get_og_image_display(self, obj):
         return obj.get_og_image_url()
+
+
+# =============================================================================
+# CONTACT MESSAGE
+# =============================================================================
+
+class ContactMessageCreateSerializer(serializers.ModelSerializer):
+    """Public-facing: what a visitor submits via the Contact Us form."""
+
+    class Meta:
+        model = ContactMessage
+        fields = ['name', 'email', 'subject', 'message']
+
+
+class ContactMessageSerializer(serializers.ModelSerializer):
+    """Admin-facing: full message record."""
+
+    class Meta:
+        model = ContactMessage
+        fields = ['id', 'name', 'email', 'subject', 'message', 'is_read', 'created_at']
+        read_only_fields = ['id', 'name', 'email', 'subject', 'message', 'created_at']

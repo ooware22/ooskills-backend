@@ -231,6 +231,7 @@ REST_FRAMEWORK = {
         'quiz_attempt': '10/hour',
         'order_create': '10/hour',
         'gift_create': '5/hour',
+        'contact_submit': '5/hour',
     },
     'DEFAULT_FILTER_BACKENDS': [
         'django_filters.rest_framework.DjangoFilterBackend',
@@ -392,6 +393,7 @@ CMS_DEFAULT_LANGUAGE = 'fr'
 
 RESEND_API_KEY = os.environ.get('RESEND_API_KEY', '')
 DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', 'resend@ooskills.com')
+CONTACT_NOTIFICATION_EMAIL = os.environ.get('CONTACT_NOTIFICATION_EMAIL', 'sbboxmail3@gmail.com')
 
 
 # =============================================================================

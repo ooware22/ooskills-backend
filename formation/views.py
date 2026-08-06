@@ -183,15 +183,18 @@ class CourseViewSet(DBRetryReadMixin, viewsets.ModelViewSet):
 
         if self.action == 'retrieve':
             # Detail view needs the full nested content tree.
+            # .annotate() with Count()/Sum() triggers a GROUP BY, which silently
+            # overrides the model's default Meta.ordering — order_by('sequence')
+            # must be explicit here or sections/modules come back in DB-arbitrary order.
             annotated_modules = Module.objects.annotate(
                 _lessons_count=Count('lessons', distinct=True),
                 _total_duration_seconds=Sum('lessons__duration_seconds'),
-            ).prefetch_related('lessons')
+            ).order_by('sequence').prefetch_related('lessons')
 
             annotated_sections = Section.objects.annotate(
                 _modules_count=Count('modules', distinct=True),
                 _total_duration_seconds=Sum('modules__lessons__duration_seconds'),
-            ).prefetch_related(
+            ).order_by('sequence').prefetch_related(
                 Prefetch('modules', queryset=annotated_modules),
                 'quiz__questions',
             )
@@ -211,7 +214,7 @@ class CourseViewSet(DBRetryReadMixin, viewsets.ModelViewSet):
             list_sections = Section.objects.annotate(
                 _modules_count=Count('modules', distinct=True),
                 _total_duration_seconds=Sum('modules__lessons__duration_seconds'),
-            )
+            ).order_by('sequence')
 
             qs = base_qs.prefetch_related(
                 Prefetch('sections', queryset=list_sections),

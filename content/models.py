@@ -607,3 +607,31 @@ class SiteSettings(TimeStampedModel):
         """Get or create the singleton settings instance."""
         settings, created = cls.objects.get_or_create(pk=1)
         return settings
+
+
+# =============================================================================
+# CONTACT MESSAGE
+# =============================================================================
+
+class ContactMessage(TimeStampedModel):
+    """
+    A submission from the public Contact Us form.
+
+    Stored durably in the DB rather than relying solely on email delivery —
+    a notification email is also sent (best-effort) but the DB row is the
+    source of truth, so a message is never silently lost if the notification
+    inbox is unreachable.
+    """
+    name = models.CharField(max_length=200)
+    email = models.EmailField()
+    subject = models.CharField(max_length=300)
+    message = models.TextField()
+    is_read = models.BooleanField(default=False, db_index=True)
+
+    class Meta:
+        verbose_name = "Contact Message"
+        verbose_name_plural = "Contact Messages"
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.name} <{self.email}> — {self.subject}"

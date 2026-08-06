@@ -33,6 +33,7 @@ from .views import (
     PublicFAQView,
     PublicTestimonialsView,
     PublicSiteSettingsView,
+    ContactMessageCreateView,
     # Admin viewsets
     AdminHeroViewSet,
     AdminFeaturesSectionViewSet,
@@ -42,6 +43,7 @@ from .views import (
     AdminFAQItemViewSet,
     AdminTestimonialViewSet,
     AdminSiteSettingsViewSet,
+    AdminContactMessageViewSet,
     InvalidateCacheView,
 )
 
@@ -59,6 +61,7 @@ admin_router.register(r'faq', AdminFAQSectionViewSet, basename='admin-faq')
 admin_router.register(r'faq-items', AdminFAQItemViewSet, basename='admin-faq-items')
 admin_router.register(r'testimonials', AdminTestimonialViewSet, basename='admin-testimonials')
 admin_router.register(r'settings', AdminSiteSettingsViewSet, basename='admin-settings')
+admin_router.register(r'contact-messages', AdminContactMessageViewSet, basename='admin-contact-messages')
 
 
 # =============================================================================
@@ -94,5 +97,6 @@ app_name = 'content'
 urlpatterns = [
     path('public/landing/', include((public_urlpatterns, 'public'))),
     path('public/settings/', include((settings_urlpatterns, 'settings'))),
+    path('public/contact/', ContactMessageCreateView.as_view(), name='public-contact-create'),
     path('admin/cms/', include((admin_urlpatterns, 'admin'))),
 ]

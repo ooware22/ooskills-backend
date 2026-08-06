@@ -27,10 +27,12 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework.throttling import ScopedRateThrottle
 
 from .models import (
     HeroSection, FeaturesSection, FeatureItem,
     Partner, FAQSection, FAQItem, Testimonial, SiteSettings,
+    ContactMessage,
     SUPPORTED_LANGUAGES, DEFAULT_LANGUAGE
 )
 from .serializers import (
@@ -44,9 +46,11 @@ from .serializers import (
     AdminFeatureItemSerializer, AdminPartnerSerializer,
     AdminFAQSectionSerializer, AdminFAQItemSerializer, AdminTestimonialSerializer,
     AdminSiteSettingsSerializer,
-    BulkOrderUpdateSerializer
+    BulkOrderUpdateSerializer,
+    ContactMessageCreateSerializer, ContactMessageSerializer,
 )
 from .permissions import IsAdminOrSuperAdmin, IsAdminOrReadOnly, PublicReadOnly
+from .email import send_contact_notification
 
 
 # =============================================================================
@@ -535,3 +539,45 @@ class AdminSiteSettingsViewSet(viewsets.ViewSet):
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(serializer.data)
+
+
+# =============================================================================
+# CONTACT MESSAGE
+# =============================================================================
+
+class ContactMessageCreateView(APIView):
+    """
+    POST /api/public/contact/
+
+    Public endpoint for the Contact Us form. Saves the message to the
+    database (source of truth) then best-effort emails a notification —
+    a failed notification never loses the message.
+    """
+    permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'contact_submit'
+
+    def post(self, request, *args, **kwargs):
+        serializer = ContactMessageCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        contact_message = serializer.save()
+
+        send_contact_notification(contact_message)
+
+        return Response(
+            {'detail': 'Message sent successfully.'},
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class AdminContactMessageViewSet(viewsets.ModelViewSet):
+    """
+    GET    /api/admin/cms/contact-messages/       - List messages
+    GET    /api/admin/cms/contact-messages/{id}/  - Retrieve a message
+    PATCH  /api/admin/cms/contact-messages/{id}/  - Mark read/unread
+    DELETE /api/admin/cms/contact-messages/{id}/  - Delete a message (e.g. spam)
+    """
+    queryset = ContactMessage.objects.all()
+    serializer_class = ContactMessageSerializer
+    permission_classes = [IsAuthenticated, IsAdminOrSuperAdmin]
+    http_method_names = ['get', 'patch', 'delete', 'head', 'options']
