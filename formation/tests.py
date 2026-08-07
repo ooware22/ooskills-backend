@@ -511,3 +511,110 @@ class CertificatePDFTests(TestCase):
         )
         self.assertIsInstance(pdf_bytes, bytes)
         self.assertTrue(pdf_bytes[:4] == b'%PDF')
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 8. COURSE GIFTING TESTS
+# ═════════════════════════════════════════════════════════════════════════════
+
+class CourseGiftTests(FormationTestBase):
+    """Test full course gifting lifecycle."""
+
+    def setUp(self):
+        super().setUp()
+        self.buyer = User.objects.create_user(
+            email='buyer@test.com', password='testpass123',
+        )
+        self.friend = User.objects.create_user(
+            email='friend@test.com', password='testpass123',
+        )
+
+    def test_non_enrolled_user_can_gift(self):
+        """User who does not own the course can purchase and send it as a gift."""
+        from rest_framework.test import APIRequestFactory, force_authenticate
+        from formation.views import CourseGiftViewSet
+        from formation.models import CourseGift, Order, OrderStatus, GiftStatus
+
+        factory = APIRequestFactory()
+        view = CourseGiftViewSet.as_view({'post': 'send'})
+
+        request = factory.post('/formation/gifts/send/', {
+            'course_id': str(self.course.id),
+            'recipient_email': 'friend@test.com',
+            'message': 'Enjoy this course!',
+        }, format='json')
+        force_authenticate(request, user=self.buyer)
+
+        response = view(request)
+        self.assertEqual(response.status_code, 201)
+
+        gift = CourseGift.objects.get(recipient_email='friend@test.com')
+        self.assertEqual(gift.sender, self.buyer)
+        self.assertEqual(gift.status, GiftStatus.PENDING)
+        self.assertFalse(Enrollment.objects.filter(user=self.buyer, course=self.course).exists())
+
+    def test_cannot_gift_to_self(self):
+        """User cannot gift a course to their own email."""
+        from rest_framework.test import APIRequestFactory, force_authenticate
+        from formation.views import CourseGiftViewSet
+
+        factory = APIRequestFactory()
+        view = CourseGiftViewSet.as_view({'post': 'send'})
+
+        request = factory.post('/formation/gifts/send/', {
+            'course_id': str(self.course.id),
+            'recipient_email': 'buyer@test.com',
+        }, format='json')
+        force_authenticate(request, user=self.buyer)
+
+        response = view(request)
+        self.assertEqual(response.status_code, 400)
+
+    def test_cannot_gift_to_already_enrolled_recipient(self):
+        """Cannot gift a course if recipient is already enrolled."""
+        from rest_framework.test import APIRequestFactory, force_authenticate
+        from formation.views import CourseGiftViewSet
+
+        Enrollment.objects.create(user=self.friend, course=self.course, status=EnrollmentStatus.ACTIVE)
+
+        factory = APIRequestFactory()
+        view = CourseGiftViewSet.as_view({'post': 'send'})
+
+        request = factory.post('/formation/gifts/send/', {
+            'course_id': str(self.course.id),
+            'recipient_email': 'friend@test.com',
+        }, format='json')
+        force_authenticate(request, user=self.buyer)
+
+        response = view(request)
+        self.assertEqual(response.status_code, 400)
+
+    def test_claim_gift_enrolls_recipient(self):
+        """Recipient can claim gift code and get auto-enrolled."""
+        from rest_framework.test import APIRequestFactory, force_authenticate
+        from formation.views import CourseGiftViewSet
+        from formation.models import CourseGift, GiftStatus
+
+        gift = CourseGift.objects.create(
+            sender=self.buyer,
+            recipient_email='friend@test.com',
+            course=self.course,
+            status=GiftStatus.PENDING,
+        )
+
+        factory = APIRequestFactory()
+        view = CourseGiftViewSet.as_view({'post': 'claim'})
+
+        request = factory.post('/formation/gifts/claim/', {
+            'gift_code': gift.gift_code,
+        }, format='json')
+        force_authenticate(request, user=self.friend)
+
+        response = view(request)
+        self.assertEqual(response.status_code, 200)
+
+        gift.refresh_from_db()
+        self.assertEqual(gift.status, GiftStatus.CLAIMED)
+        self.assertEqual(gift.recipient_user, self.friend)
+        self.assertTrue(Enrollment.objects.filter(user=self.friend, course=self.course).exists())
+

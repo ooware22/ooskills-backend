@@ -26,7 +26,7 @@ from drf_spectacular.utils import extend_schema, extend_schema_view
 
 from formation.models import (
     Category, Certificate, Course, CourseMaterial, CourseGift, CourseRating,
-    CourseStatus, Enrollment,
+    CourseStatus, Enrollment, EnrollmentStatus,
     FinalQuiz, FinalQuizAttempt, FinalQuizAudio, GiftStatus,
     Lesson, LessonNote, LessonProgress, Order, OrderItem, OrderStatus,
     PaymentMethod, PromoCode, PromoCodeUsage,
@@ -104,6 +104,27 @@ def _auto_enroll_order_user(order: Order) -> None:
             enroll_user(order.user, course)
         except AlreadyEnrolled:
             pass
+
+
+def _process_paid_order(order: Order) -> None:
+    """Process actions when an order is paid: send gifts or enroll buyer."""
+    gifts = CourseGift.objects.filter(order=order)
+    if gifts.exists():
+        import threading
+        from formation.services.gift_email import send_gift_email
+        for gift in gifts:
+            sender_name = (
+                getattr(order.user, 'full_name', None)
+                or getattr(order.user, 'display_name', None)
+                or order.user.email
+            )
+            threading.Thread(
+                target=send_gift_email,
+                args=(gift.recipient_email, sender_name, gift.course.title, gift.gift_code, gift.message),
+                daemon=True,
+            ).start()
+    else:
+        _auto_enroll_order_user(order)
 
 
 def _checkout_is_paid(checkout_payload: dict) -> bool:
@@ -1014,6 +1035,24 @@ class OrderViewSet(
 
         total = max(0, subtotal - promo_discount - wallet_discount)
 
+        # ── Check if this is a gift order ────────────────────────────────────
+        is_gift = ser.validated_data.get('is_gift', False)
+        recipient_email = ser.validated_data.get('recipient_email', '').strip().lower()
+        gift_message = ser.validated_data.get('gift_message', '').strip()
+
+        if is_gift:
+            if not recipient_email:
+                return Response({'detail': 'Email du destinataire requis pour offrir ce cours.'}, status=status.HTTP_400_BAD_REQUEST)
+            if recipient_email == request.user.email.lower():
+                return Response({'detail': 'Vous ne pouvez pas vous offrir un cours à vous-même.'}, status=status.HTTP_400_BAD_REQUEST)
+            from django.contrib.auth import get_user_model
+            user_model = get_user_model()
+            recipient_user = user_model.objects.filter(email__iexact=recipient_email).first()
+            if recipient_user:
+                for course in courses:
+                    if Enrollment.objects.filter(user=recipient_user, course=course).exclude(status=EnrollmentStatus.CANCELLED).exists():
+                        return Response({'detail': f'Le destinataire est déjà inscrit au cours «\u202f{course.title}\u202f».'}, status=status.HTTP_400_BAD_REQUEST)
+
         order = Order.objects.create(
             user=request.user,
             total=total,
@@ -1025,6 +1064,19 @@ class OrderViewSet(
             OrderItem.objects.create(
                 order=order, course=course, price=course.get_price_for_user(request.user),
             )
+
+        if is_gift:
+            from django.utils import timezone
+            import datetime
+            for course in courses:
+                CourseGift.objects.create(
+                    sender=request.user,
+                    recipient_email=recipient_email,
+                    course=course,
+                    order=order,
+                    message=gift_message,
+                    expires_at=timezone.now() + datetime.timedelta(days=90),
+                )
 
         # Record promo usage and increment counter
         if applied_promo:
@@ -1046,15 +1098,11 @@ class OrderViewSet(
                 referral_balance=F('referral_balance') - wallet_discount,
             )
 
-        # Free order (or below Chargily's 10 DZD minimum) → mark paid immediately and auto-enroll
+        # Free order (or below Chargily's 10 DZD minimum) → mark paid immediately
         if total < 10:
             order.status = OrderStatus.PAID
             order.save(update_fields=['status'])
-            for course in courses:
-                try:
-                    enroll_user(request.user, course)
-                except AlreadyEnrolled:
-                    pass
+            _process_paid_order(order)
             return Response(
                 OrderSerializer(order).data,
                 status=status.HTTP_201_CREATED,
@@ -1097,7 +1145,7 @@ class OrderViewSet(
         order = self.get_object()
 
         if order.status == OrderStatus.PAID:
-            _auto_enroll_order_user(order)
+            _process_paid_order(order)
             return Response(OrderSerializer(order).data, status=status.HTTP_200_OK)
 
         if not order.chargily_checkout_id:
@@ -1131,7 +1179,7 @@ class OrderViewSet(
             else:
                 order.save(update_fields=['status', 'updated_at'])
 
-            _auto_enroll_order_user(order)
+            _process_paid_order(order)
             return Response(OrderSerializer(order).data, status=status.HTTP_200_OK)
 
         return Response(
@@ -1741,7 +1789,7 @@ class ChargilyWebhookView(View):
             order.paymentRef = event.get('id', '')
             order.save(update_fields=['status', 'paymentRef', 'updated_at'])
 
-            _auto_enroll_order_user(order)
+            _process_paid_order(order)
 
             logger.info(f'Chargily webhook: order {order.id} marked as PAID')
 
@@ -1858,13 +1906,17 @@ class CourseGiftViewSet(viewsets.GenericViewSet):
 
     @action(detail=False, methods=['post'])
     def send(self, request):
-        """Send a course as a gift."""
+        """Purchase and send a course as a gift."""
         ser = CourseGiftSendSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
 
         course_id = ser.validated_data['course_id']
-        recipient_email = ser.validated_data['recipient_email']
-        message = ser.validated_data.get('message', '')
+        recipient_email = ser.validated_data['recipient_email'].strip().lower()
+        message = ser.validated_data.get('message', '').strip()
+        payment_method = ser.validated_data.get('paymentMethod', PaymentMethod.EDAHABIA)
+        payment_ref = ser.validated_data.get('paymentRef', '')
+        promo_code_str = ser.validated_data.get('promo_code', '').strip().upper()
+        use_wallet = ser.validated_data.get('use_wallet', False)
 
         try:
             course = Course.objects.get(id=course_id)
@@ -1872,30 +1924,76 @@ class CourseGiftViewSet(viewsets.GenericViewSet):
             return Response({'detail': 'Cours introuvable.'}, status=404)
 
         # Don't gift to yourself
-        if recipient_email == request.user.email:
-            return Response({'detail': 'Vous ne pouvez pas vous offrir un cours.'}, status=400)
-
-        # Sender must own (be enrolled in) the course
-        if not Enrollment.objects.filter(user=request.user, course=course).exists():
-            return Response({'detail': 'Vous devez être inscrit à ce cours pour l\'offrir.'}, status=400)
+        if recipient_email == request.user.email.lower():
+            return Response({'detail': 'Vous ne pouvez pas vous offrir un cours à vous-même.'}, status=400)
 
         # Check if recipient is already enrolled
         from django.contrib.auth import get_user_model
         user_model = get_user_model()
-        recipient_user = user_model.objects.filter(email=recipient_email).first()
-        if recipient_user and Enrollment.objects.filter(user=recipient_user, course=course).exists():
+        recipient_user = user_model.objects.filter(email__iexact=recipient_email).first()
+        if recipient_user and Enrollment.objects.filter(user=recipient_user, course=course).exclude(status=EnrollmentStatus.CANCELLED).exists():
             return Response({'detail': 'Ce destinataire est déjà inscrit à ce cours.'}, status=400)
 
-        # Create gift order (no new charge — sender already paid)
+        # Calculate price & discounts
+        subtotal = int(course.get_price_for_user(request.user))
+        promo_discount = 0
+        applied_promo = None
+
+        if promo_code_str:
+            try:
+                promo = PromoCode.objects.get(code__iexact=promo_code_str)
+            except PromoCode.DoesNotExist:
+                return Response({'detail': 'Code promo invalide.'}, status=400)
+
+            if not promo.is_valid:
+                return Response({'detail': 'Ce code promo a expiré ou est épuisé.'}, status=400)
+
+            user_usage = PromoCodeUsage.objects.filter(user=request.user, promo_code=promo).count()
+            if user_usage >= promo.max_uses_per_user:
+                return Response({'detail': 'Vous avez déjà utilisé ce code promo.'}, status=400)
+
+            if promo.courses.exists() and not promo.courses.filter(id=course.id).exists():
+                return Response({'detail': f'Le code promo ne s\'applique pas au cours «\u202f{course.title}\u202f».'}, status=400)
+
+            if promo.min_order_total and subtotal < promo.min_order_total:
+                return Response({'detail': f'Le montant minimum pour ce code est de {promo.min_order_total}\u202fDZD.'}, status=400)
+
+            promo_discount = int(promo.compute_discount(subtotal))
+            applied_promo = promo
+
+        wallet_discount = 0
+        if use_wallet and getattr(request.user, 'referral_balance', 0) > 0:
+            after_promo = max(0, subtotal - promo_discount)
+            wallet_discount = min(int(request.user.referral_balance), after_promo)
+
+        total = int(max(0, subtotal - promo_discount - wallet_discount))
+
         order = Order.objects.create(
             user=request.user,
-            total=0,  # No charge — it's a gift from an owned course
-            status=OrderStatus.PAID,
-            paymentMethod=PaymentMethod.FREE,
+            total=total,
+            paymentMethod=payment_method if total >= 10 else PaymentMethod.FREE,
+            paymentRef=payment_ref,
         )
-        OrderItem.objects.create(order=order, course=course, price=0)
+        OrderItem.objects.create(order=order, course=course, price=subtotal)
 
-        # Create the gift
+        if applied_promo:
+            PromoCodeUsage.objects.create(
+                user=request.user,
+                promo_code=applied_promo,
+                order=order,
+                discount_applied=promo_discount,
+            )
+            PromoCode.objects.filter(pk=applied_promo.pk).update(
+                uses_count=db_models.F('uses_count') + 1,
+            )
+
+        if wallet_discount > 0:
+            from django.db.models import F
+            get_user_model().objects.filter(pk=request.user.pk).update(
+                referral_balance=F('referral_balance') - wallet_discount,
+            )
+
+        # Create the gift linked to this order
         from django.utils import timezone
         import datetime
         gift = CourseGift.objects.create(
@@ -1907,26 +2005,65 @@ class CourseGiftViewSet(viewsets.GenericViewSet):
             expires_at=timezone.now() + datetime.timedelta(days=90),
         )
 
-        # Send email notification to recipient (non-blocking)
-        import threading
-        from formation.services.gift_email import send_gift_email
-        sender_name = (
-            getattr(request.user, 'full_name', None)
-            or getattr(request.user, 'display_name', None)
-            or request.user.email
-        )
-        threading.Thread(
-            target=send_gift_email,
-            args=(recipient_email, sender_name, course.title, gift.gift_code, message),
-            daemon=True,
-        ).start()
+        # Free order (or total < 10) → mark paid immediately and send email
+        if total < 10:
+            order.status = OrderStatus.PAID
+            order.save(update_fields=['status'])
+
+            import threading
+            from formation.services.gift_email import send_gift_email
+            sender_name = (
+                getattr(request.user, 'full_name', None)
+                or getattr(request.user, 'display_name', None)
+                or request.user.email
+            )
+            threading.Thread(
+                target=send_gift_email,
+                args=(recipient_email, sender_name, course.title, gift.gift_code, message),
+                daemon=True,
+            ).start()
+
+            return Response({
+                'order_id': str(order.id),
+                'gift_code': gift.gift_code,
+                'recipient_email': gift.recipient_email,
+                'course_title': course.title,
+                'total': 0,
+                'is_free': True,
+                'checkout_url': '',
+                'message': f'Cadeau envoyé ! Code: {gift.gift_code}',
+            }, status=status.HTTP_201_CREATED)
+
+        # Paid order → create Chargily checkout
+        try:
+            chargily_id, checkout_url = create_chargily_checkout(
+                order,
+                payment_method=payment_method,
+                course_slug=course.slug,
+                request=request,
+            )
+            order.chargily_checkout_id = chargily_id
+            order.checkout_url = checkout_url
+            order.save(update_fields=['chargily_checkout_id', 'checkout_url'])
+        except Exception as e:
+            logger.error(f'Chargily gift checkout creation failed: {e}', exc_info=True)
+            order.status = OrderStatus.FAILED
+            order.save(update_fields=['status'])
+            return Response(
+                {'detail': f'Échec de l\'initialisation du paiement : {str(e)}'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         return Response({
+            'order_id': str(order.id),
             'gift_code': gift.gift_code,
             'recipient_email': gift.recipient_email,
             'course_title': course.title,
-            'message': f'Cadeau envoyé ! Code: {gift.gift_code}',
-        }, status=201)
+            'total': total,
+            'is_free': False,
+            'checkout_url': checkout_url,
+            'message': 'Redirection vers la page de paiement...',
+        }, status=status.HTTP_201_CREATED)
 
     @action(detail=False, methods=['post'])
     def claim(self, request):
@@ -1945,7 +2082,7 @@ class CourseGiftViewSet(viewsets.GenericViewSet):
             return Response({'detail': 'Ce cadeau a déjà été réclamé ou a expiré.'}, status=400)
 
         # Check if user is already enrolled
-        if Enrollment.objects.filter(user=request.user, course=gift.course).exists():
+        if Enrollment.objects.filter(user=request.user, course=gift.course).exclude(status=EnrollmentStatus.CANCELLED).exists():
             return Response({'detail': 'Vous êtes déjà inscrit à ce cours.'}, status=400)
 
         # Enroll the user
@@ -1955,6 +2092,32 @@ class CourseGiftViewSet(viewsets.GenericViewSet):
         gift.status = GiftStatus.CLAIMED
         gift.claimed_at = timezone.now()
         gift.save(update_fields=['recipient_user', 'status', 'claimed_at'])
+
+        # In-app notifications
+        try:
+            from users.models import Notification, NotificationType
+            sender_name = (
+                getattr(gift.sender, 'full_name', None)
+                or getattr(gift.sender, 'display_name', None)
+                or gift.sender.email
+            )
+            Notification.push(
+                request.user,
+                NotificationType.GIFT_RECEIVED,
+                f"Cadeau activé : {gift.course.title}",
+                f"Offert par {sender_name}. Bon apprentissage !",
+                f"/courses/{gift.course.slug}"
+            )
+            if gift.sender:
+                Notification.push(
+                    gift.sender,
+                    NotificationType.GIFT_RECEIVED,
+                    "Cadeau réclamé !",
+                    f"{request.user.email} a activé son cadeau ({gift.course.title}).",
+                    "/dashboard"
+                )
+        except Exception as e:
+            logger.warning(f"Gift claim notification failed: {e}")
 
         return Response({
             'detail': 'Cadeau réclamé ! Vous êtes maintenant inscrit.',

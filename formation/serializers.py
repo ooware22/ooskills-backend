@@ -601,6 +601,10 @@ class OrderCreateSerializer(serializers.Serializer):
     promo_code = serializers.CharField(max_length=50, required=False, allow_blank=True, default='')
     # Whether to use the user's referral wallet balance
     use_wallet = serializers.BooleanField(required=False, default=False)
+    # Gift purchase fields
+    is_gift = serializers.BooleanField(required=False, default=False)
+    recipient_email = serializers.EmailField(required=False, allow_blank=True, default='')
+    gift_message = serializers.CharField(required=False, allow_blank=True, default='')
 
 
 # ─── Certificate ─────────────────────────────────────────────────────────────
@@ -761,10 +765,14 @@ class CourseGiftSerializer(serializers.ModelSerializer):
 
 
 class CourseGiftSendSerializer(serializers.Serializer):
-    """Input for sending a course gift."""
+    """Input for sending / purchasing a course gift."""
     course_id = serializers.UUIDField()
     recipient_email = serializers.EmailField()
     message = serializers.CharField(required=False, allow_blank=True, default='')
+    paymentMethod = serializers.CharField(max_length=30, required=False, default='edahabia')
+    paymentRef = serializers.CharField(max_length=200, required=False, allow_blank=True, default='')
+    promo_code = serializers.CharField(max_length=50, required=False, allow_blank=True, default='')
+    use_wallet = serializers.BooleanField(required=False, default=False)
 
 
 class CourseGiftClaimSerializer(serializers.Serializer):
