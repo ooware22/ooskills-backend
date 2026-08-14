@@ -65,6 +65,9 @@ jobs:
           key: ${{ secrets.VPS_SSH_KEY }}
           script: |
             set -e
+            # Ensure proper permissions
+            chown -R ooskills:ooskills /var/www/ooskills/ooskills-backend
+
             su - ooskills -c '
               set -e
               cd /var/www/ooskills/ooskills-backend
@@ -74,6 +77,21 @@ jobs:
               venv/bin/python manage.py migrate --noinput
               venv/bin/python manage.py collectstatic --noinput
             '
+
+            # Restart backend service
             systemctl restart ooskills-backend
-            sleep 2
-            systemctl is-active --quiet ooskills-backend
+
+            # Wait and verify the service becomes active
+            echo "Waiting for ooskills-backend to be ready..."
+            for i in {1..15}; do
+              if systemctl is-active --quiet ooskills-backend; then
+                echo "ooskills-backend is active and running!"
+                exit 0
+              fi
+              sleep 1
+            done
+
+            echo "ERROR: ooskills-backend failed to start after 15 seconds."
+            systemctl status ooskills-backend -l --no-pager
+            journalctl -u ooskills-backend -n 30 --no-pager
+            exit 1
