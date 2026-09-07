@@ -10,6 +10,8 @@ from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from users.permissions import IsAdmin
+
 from gamefication.models import (
     AchievementDefinition,
     LeaderboardCache,
@@ -142,7 +144,7 @@ class AdminAchievementViewSet(viewsets.ModelViewSet):
     DELETE /api/gamification/admin-achievements/<id>/
     """
     serializer_class = AdminAchievementSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAdmin]
     queryset = AchievementDefinition.objects.all()
 
     def get_queryset(self):

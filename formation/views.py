@@ -48,16 +48,19 @@ from formation.serializers import (
     PromoCodeSerializer, PromoCodeValidateSerializer,
     ProgressAutosaveSerializer,
     QuizAttemptSerializer, QuizSerializer, QuizSubmitSerializer,
-    QuizQuestionSerializer,
+    QuizQuestionSerializer, QuizQuestionAdminSerializer,
     SectionDetailSerializer, SectionSerializer, ModuleSerializer,
     ShareTokenCreateSerializer, ShareTokenSerializer,
     WishlistSerializer, MarketingCampaignSerializer,
 )
 from formation.permissions import IsAdminOrReadOnly, IsOwnerOrAdmin, IsEnrolledStudent
+from users.permissions import IsAdmin
 from formation.filters import CourseFilter, EnrollmentFilter, OrderFilter
 from formation.services.progress_service import autosave_progress
 from formation.services.quiz_service import submit_quiz, QuizLimitExceeded
-from formation.services.enrollment_service import enroll_user, AlreadyEnrolled
+from formation.services.enrollment_service import (
+    enroll_user, self_enroll, AlreadyEnrolled, PaymentRequired,
+)
 from formation.services.sharing_service import (
     create_share_token, validate_and_consume_token,
 )
@@ -709,12 +712,17 @@ class QuizViewSet(viewsets.ModelViewSet):
 
 class QuizQuestionViewSet(viewsets.ModelViewSet):
     """
-    QuizQuestion CRUD.
+    QuizQuestion CRUD — admin only.
+
+    This endpoint returns the full question including the answer key, so it is
+    restricted to admins. Students never read from here: the player receives
+    answer-free questions via the nested course/section payloads, and grading
+    is done server-side (see ``quiz_service.submit_quiz``).
 
     Filter by quiz: GET /api/formation/quiz-questions/?quiz=<quiz-id>
     """
-    serializer_class = QuizQuestionSerializer
-    permission_classes = [IsAdminOrReadOnly]
+    serializer_class = QuizQuestionAdminSerializer
+    permission_classes = [IsAdmin]
 
     def get_queryset(self):
         qs = QuizQuestion.objects.select_related('quiz')
@@ -763,7 +771,12 @@ class EnrollmentViewSet(
             )
 
         try:
-            enrollment = enroll_user(request.user, course)
+            enrollment = self_enroll(request.user, course)
+        except PaymentRequired as e:
+            return Response(
+                {'detail': str(e)},
+                status=status.HTTP_402_PAYMENT_REQUIRED,
+            )
         except AlreadyEnrolled as e:
             return Response(
                 {'detail': str(e)},
@@ -1711,6 +1724,15 @@ class ShareTokenViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
+        # Only someone with access to the course may mint a share token for it.
+        # Admins/instructors can always share; everyone else must be enrolled
+        # (which, post F-01, implies a settled purchase for paid courses).
+        if not (request.user.is_admin or _is_enrolled_cached(request.user, course)):
+            return Response(
+                {'detail': 'You must have access to this course to share it.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         token = create_share_token(
             course=course,
             user=request.user,
@@ -1826,7 +1848,10 @@ class PromoCodeViewSet(viewsets.ModelViewSet):
     def get_permissions(self):
         if self.action == 'validate':
             return [IsAuthenticated()]
-        return [IsAdminOrReadOnly()]
+        # Listing/among other reads exposes an admin serializer (codes, caps,
+        # min-order rules). Restrict every non-validate action to admins so
+        # regular and anonymous users can't enumerate the discount catalogue.
+        return [IsAdmin()]
 
     @action(detail=False, methods=['post'])
     def validate(self, request):
@@ -2085,9 +2110,14 @@ class CourseGiftViewSet(viewsets.GenericViewSet):
         if Enrollment.objects.filter(user=request.user, course=gift.course).exclude(status=EnrollmentStatus.CANCELLED).exists():
             return Response({'detail': 'Vous êtes déjà inscrit à ce cours.'}, status=400)
 
-        # Enroll the user
+        # Enroll the user. The gift is a settled, paid entitlement, so we call
+        # the trusted primitive directly (this also keeps Course.students in
+        # sync, which a raw Enrollment.objects.create would skip).
         from django.utils import timezone
-        Enrollment.objects.create(user=request.user, course=gift.course)
+        try:
+            enroll_user(request.user, gift.course)
+        except AlreadyEnrolled:
+            return Response({'detail': 'Vous êtes déjà inscrit à ce cours.'}, status=400)
         gift.recipient_user = request.user
         gift.status = GiftStatus.CLAIMED
         gift.claimed_at = timezone.now()

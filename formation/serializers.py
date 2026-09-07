@@ -34,7 +34,27 @@ class CategorySerializer(serializers.ModelSerializer):
 # ─── Quiz & Questions ────────────────────────────────────────────────────────
 
 class QuizQuestionSerializer(serializers.ModelSerializer):
-    """Matches TS ``QuizQuestion`` interface — all text fields are i18n JSON."""
+    """
+    Student-facing question shape — deliberately WITHOUT the answer key.
+
+    This is the default serializer used everywhere questions are delivered to
+    learners, including the nested course/section/quiz payloads (which are
+    globally cached). ``correct_answer`` and ``explanation`` are intentionally
+    absent so the answer bank never leaves the server through a read endpoint.
+    Grading happens server-side in ``quiz_service.submit_quiz`` and the result
+    (with the correct answers) is returned per-attempt as ``feedback``.
+    """
+
+    class Meta:
+        model = QuizQuestion
+        fields = [
+            'id', 'quiz', 'type', 'question', 'options',
+            'difficulty', 'category', 'sequence',
+        ]
+
+
+class QuizQuestionAdminSerializer(serializers.ModelSerializer):
+    """Full question shape including the answer key. Admin CRUD only."""
 
     class Meta:
         model = QuizQuestion
