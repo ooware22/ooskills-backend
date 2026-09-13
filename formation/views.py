@@ -294,6 +294,17 @@ class CourseViewSet(DBRetryReadMixin, viewsets.ModelViewSet):
 
     def list(self, request, *args, **kwargs):
         is_admin = request.user.is_authenticated and request.user.is_admin
+        if is_admin:
+            # Admins edit courses and must see their own save immediately. Without
+            # Redis, the cache is per-gunicorn-worker and invalidate_course_list()'s
+            # delete_pattern is a no-op, so a cached copy would stay stale on every
+            # worker for up to COURSE_LIST_TTL. Admin traffic is tiny — skip the cache.
+            response = self._run_with_db_retry(
+                lambda: super(CourseViewSet, self).list(request, *args, **kwargs)
+            )
+            data = response.data
+            self._apply_live_pricing(data.get('results', data) if isinstance(data, dict) else data)
+            return response
         key = course_list_key(dict(request.query_params), is_admin=is_admin)
         cached = cache.get(key)
         if cached is not None:
@@ -309,7 +320,11 @@ class CourseViewSet(DBRetryReadMixin, viewsets.ModelViewSet):
 
     def retrieve(self, request, *args, **kwargs):
         slug = kwargs.get('slug', self.kwargs.get('slug'))
-        key = course_detail_key(slug) if slug else None
+        # Same reasoning as list(); also, admins can see draft courses, and the detail
+        # cache key is slug-only — caching an admin's view of a draft would serve it to
+        # the public from cache.
+        is_admin = request.user.is_authenticated and request.user.is_admin
+        key = course_detail_key(slug) if slug and not is_admin else None
         if key:
             cached = cache.get(key)
             if cached is not None:

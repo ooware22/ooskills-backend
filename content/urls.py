@@ -34,6 +34,7 @@ from .views import (
     PublicTestimonialsView,
     PublicSiteSettingsView,
     ContactMessageCreateView,
+    PublicCountdownView,
     # Admin viewsets
     AdminHeroViewSet,
     AdminFeaturesSectionViewSet,
@@ -44,6 +45,7 @@ from .views import (
     AdminTestimonialViewSet,
     AdminSiteSettingsViewSet,
     AdminContactMessageViewSet,
+    AdminCountdownViewSet,
     InvalidateCacheView,
 )
 
@@ -62,6 +64,7 @@ admin_router.register(r'faq-items', AdminFAQItemViewSet, basename='admin-faq-ite
 admin_router.register(r'testimonials', AdminTestimonialViewSet, basename='admin-testimonials')
 admin_router.register(r'settings', AdminSiteSettingsViewSet, basename='admin-settings')
 admin_router.register(r'contact-messages', AdminContactMessageViewSet, basename='admin-contact-messages')
+admin_router.register(r'countdown', AdminCountdownViewSet, basename='admin-countdown')
 
 
 # =============================================================================
@@ -76,6 +79,7 @@ public_urlpatterns = [
     path('partners/', PublicPartnersView.as_view(), name='public-partners'),
     path('faq/', PublicFAQView.as_view(), name='public-faq'),
     path('testimonials/', PublicTestimonialsView.as_view(), name='public-testimonials'),
+    path('countdown/', PublicCountdownView.as_view(), name='public-countdown'),
 ]
 
 # Site settings public URL (separate from landing to allow independent caching)

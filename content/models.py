@@ -18,9 +18,12 @@ Translation JSON structure:
 }
 """
 
+from datetime import timedelta
+
 from django.db import models
 from django.core.validators import URLValidator, MinValueValidator, MaxValueValidator
 from django.core.exceptions import ValidationError
+from django.utils import timezone
 import json
 
 
@@ -635,3 +638,66 @@ class ContactMessage(TimeStampedModel):
 
     def __str__(self):
         return f"{self.name} <{self.email}> — {self.subject}"
+
+
+# =============================================================================
+# COUNTDOWN SECTION
+# =============================================================================
+
+class CountdownSection(TimeStampedModel, TranslatableFieldMixin):
+    """
+    Singleton: the platform-launch countdown banner shown on the landing page.
+
+    Admin-editable (title/subtitle/CTA per language, target date, on/off toggle) —
+    replaces what used to be hardcoded directly in the frontend component.
+    """
+    title = models.JSONField(
+        default=dict, blank=True,
+        help_text='{"fr": "...", "en": "...", "ar": "..."}',
+    )
+    subtitle = models.JSONField(
+        default=dict, blank=True,
+        help_text='{"fr": "...", "en": "...", "ar": "..."}',
+    )
+    cta_text = models.JSONField(
+        default=dict, blank=True,
+        help_text='{"fr": "...", "en": "...", "ar": "..."} - Button text',
+    )
+    launch_date = models.DateTimeField(
+        help_text='Target date/time the countdown counts down to',
+    )
+    is_active = models.BooleanField(
+        default=True,
+        help_text='Show this section on the public landing page',
+    )
+
+    class Meta:
+        verbose_name = "Countdown Section"
+        verbose_name_plural = "Countdown Section"
+
+    def __str__(self):
+        return f"Countdown → {self.launch_date.date()}"
+
+    @classmethod
+    def get_settings(cls):
+        """Get or create the singleton countdown config."""
+        obj, _ = cls.objects.get_or_create(pk=1, defaults={
+            'title': {
+                'fr': 'Lancement de la plateforme bientôt',
+                'en': 'Platform Launching Soon',
+                'ar': 'انطلاقة المنصة قريباً',
+            },
+            'subtitle': {
+                'fr': "Préparez-vous pour une expérience d'apprentissage exceptionnelle",
+                'en': 'Get ready for an exceptional learning experience',
+                'ar': 'استعدوا لتجربة تعليمية استثنائية',
+            },
+            'cta_text': {
+                'fr': 'Me notifier au lancement',
+                'en': 'Notify Me at Launch',
+                'ar': 'أخبرني عند الإطلاق',
+            },
+            'launch_date': timezone.now() + timedelta(days=90),
+            'is_active': True,
+        })
+        return obj

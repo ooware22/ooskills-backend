@@ -32,7 +32,7 @@ from rest_framework.throttling import ScopedRateThrottle
 from .models import (
     HeroSection, FeaturesSection, FeatureItem,
     Partner, FAQSection, FAQItem, Testimonial, SiteSettings,
-    ContactMessage,
+    ContactMessage, CountdownSection,
     SUPPORTED_LANGUAGES, DEFAULT_LANGUAGE
 )
 from .serializers import (
@@ -48,6 +48,7 @@ from .serializers import (
     AdminSiteSettingsSerializer,
     BulkOrderUpdateSerializer,
     ContactMessageCreateSerializer, ContactMessageSerializer,
+    PublicCountdownSerializer, AdminCountdownSerializer,
 )
 from .permissions import IsAdminOrSuperAdmin, IsAdminOrReadOnly, PublicReadOnly
 from .email import send_contact_notification
@@ -581,3 +582,51 @@ class AdminContactMessageViewSet(viewsets.ModelViewSet):
     serializer_class = ContactMessageSerializer
     permission_classes = [IsAuthenticated, IsAdminOrSuperAdmin]
     http_method_names = ['get', 'patch', 'delete', 'head', 'options']
+
+
+# =============================================================================
+# COUNTDOWN SECTION
+# =============================================================================
+
+class PublicCountdownView(LanguageMixin, APIView):
+    """
+    GET /api/public/landing/countdown/?lang=fr
+
+    Returns the countdown config for the requested language. Not cached —
+    the admin on/off toggle and date need to reflect immediately, and this
+    is a single cheap row lookup, not worth trading freshness for.
+    """
+    permission_classes = [AllowAny]
+
+    def get(self, request, *args, **kwargs):
+        lang = self.get_language()
+        countdown = CountdownSection.get_settings()
+        serializer = PublicCountdownSerializer(countdown, context={'lang': lang, 'request': request})
+        return Response(serializer.data)
+
+
+class AdminCountdownViewSet(viewsets.ViewSet):
+    """
+    GET /api/admin/cms/countdown/
+    PUT/PATCH /api/admin/cms/countdown/update_settings/
+
+    Get or update the countdown config (singleton - only one instance).
+    """
+    permission_classes = [IsAuthenticated, IsAdminOrSuperAdmin]
+
+    def list(self, request):
+        countdown = CountdownSection.get_settings()
+        serializer = AdminCountdownSerializer(countdown)
+        return Response(serializer.data)
+
+    def retrieve(self, request, pk=None):
+        return self.list(request)
+
+    @action(detail=False, methods=['put', 'patch'])
+    def update_settings(self, request):
+        partial = request.method == 'PATCH'
+        countdown = CountdownSection.get_settings()
+        serializer = AdminCountdownSerializer(countdown, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)

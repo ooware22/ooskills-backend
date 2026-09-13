@@ -9,7 +9,7 @@ from rest_framework import serializers
 from .models import (
     HeroSection, FeaturesSection, FeatureItem,
     Partner, FAQSection, FAQItem, Testimonial, SiteSettings,
-    ContactMessage,
+    ContactMessage, CountdownSection,
     SUPPORTED_LANGUAGES, DEFAULT_LANGUAGE, FALLBACK_ORDER
 )
 
@@ -589,3 +589,42 @@ class ContactMessageSerializer(serializers.ModelSerializer):
         model = ContactMessage
         fields = ['id', 'name', 'email', 'subject', 'message', 'is_read', 'created_at']
         read_only_fields = ['id', 'name', 'email', 'subject', 'message', 'created_at']
+
+
+# =============================================================================
+# COUNTDOWN SECTION
+# =============================================================================
+
+class PublicCountdownSerializer(serializers.ModelSerializer):
+    """Public Countdown section - returns translated strings for requested language."""
+    title = serializers.SerializerMethodField()
+    subtitle = serializers.SerializerMethodField()
+    cta_text = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CountdownSection
+        fields = ['title', 'subtitle', 'cta_text', 'launch_date', 'is_active']
+
+    def get_title(self, obj):
+        return get_translated_value(obj.title, self.context.get('lang', DEFAULT_LANGUAGE))
+
+    def get_subtitle(self, obj):
+        return get_translated_value(obj.subtitle, self.context.get('lang', DEFAULT_LANGUAGE))
+
+    def get_cta_text(self, obj):
+        return get_translated_value(obj.cta_text, self.context.get('lang', DEFAULT_LANGUAGE))
+
+
+class AdminCountdownSerializer(serializers.ModelSerializer):
+    """Admin Countdown section - full translation access."""
+    title = TranslationField(required=False)
+    subtitle = TranslationField(required=False)
+    cta_text = TranslationField(required=False)
+
+    class Meta:
+        model = CountdownSection
+        fields = [
+            'id', 'title', 'subtitle', 'cta_text', 'launch_date', 'is_active',
+            'created_at', 'updated_at',
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
