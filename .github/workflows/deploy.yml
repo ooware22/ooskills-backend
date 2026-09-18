@@ -25,6 +25,14 @@ jobs:
             su - ooskills -c '
               set -e
               cd /var/www/ooskills/ooskills-backend
+              # "git reset --hard" below erases any change made on the server that
+              # was never committed. Refuse to deploy instead of losing work silently.
+              if [ -n "$(git status --porcelain)" ]; then
+                echo "ERROR: the server has changes that are not committed to git:"
+                git status --porcelain
+                echo "Deploying would erase them. Commit and push them first, then re-run this deploy."
+                exit 1
+              fi
               git fetch origin
               git reset --hard origin/main
               venv/bin/pip install -q -r requirements.txt
