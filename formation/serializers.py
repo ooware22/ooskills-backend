@@ -242,7 +242,7 @@ class CourseListSerializer(serializers.ModelSerializer):
             'price', 'originalPrice', 'discount', 'description',
             'prerequisites', 'whatYouLearn', 'sections', 'materials',
             'language', 'certificate', 'lastUpdated', 'status', 'totalSlides',
-            'is_free',
+            'is_free', 'created_at',
         ]
 
     def get_totalSlides(self, obj):

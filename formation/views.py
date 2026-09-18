@@ -200,7 +200,9 @@ class CourseViewSet(DBRetryReadMixin, viewsets.ModelViewSet):
     filter_backends = [DjangoFilterBackend, OrderingFilter]
     filterset_class = CourseFilter
     ordering_fields = ['date', 'price', 'rating', 'students', 'created_at']
-    ordering = ['-date']
+    # Newest imported course first. (Was '-date', but 'date' is never set on
+    # imported courses, so every row tied on NULL and the order was arbitrary.)
+    ordering = ['-created_at']
 
     def get_queryset(self):
         base_qs = Course.objects.select_related('category')
