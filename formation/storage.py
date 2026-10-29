@@ -35,6 +35,21 @@ R2_TEMP_BUCKET = 'materials'
 R2_TEMP_PREFIX = 'temp-uploads/'
 
 
+def r2_bucket(logical_name):
+    """
+    Map a logical bucket name ("audios", "materials", ...) to the physical R2
+    bucket for this environment, using settings.R2_BUCKET_PREFIX.
+
+    Code and API payloads keep using logical names; only the calls that
+    actually hit R2 go through this, so staging (prefix "staging-") and
+    production (no prefix) can never read or delete each other's files.
+    """
+    prefix = getattr(settings, 'R2_BUCKET_PREFIX', '') or ''
+    if prefix and not logical_name.startswith(prefix):
+        return f'{prefix}{logical_name}'
+    return logical_name
+
+
 def generate_presigned_upload_url(object_key, bucket=R2_TEMP_BUCKET, content_type=None, expires_in=3600):
     """
     Generate a presigned PUT URL for direct browser-to-R2 upload.
@@ -46,7 +61,7 @@ def generate_presigned_upload_url(object_key, bucket=R2_TEMP_BUCKET, content_typ
     """
     client = _get_r2_client()
     params = {
-        'Bucket': bucket,
+        'Bucket': r2_bucket(bucket),
         'Key': object_key,
     }
     if content_type:
@@ -73,7 +88,7 @@ def download_r2_object_to_file(bucket, key, dest_path):
     the backend downloads it locally for processing.
     """
     client = _get_r2_client()
-    client.download_file(bucket, key, dest_path)
+    client.download_file(r2_bucket(bucket), key, dest_path)
     logger.info('R2 download OK  bucket=%s key=%s → %s', bucket, key, dest_path)
 
 
@@ -81,7 +96,7 @@ def delete_r2_object(bucket, key):
     """Delete a single object from R2 (cleanup after processing)."""
     try:
         client = _get_r2_client()
-        client.delete_object(Bucket=bucket, Key=key)
+        client.delete_object(Bucket=r2_bucket(bucket), Key=key)
         logger.info('R2 cleanup OK  bucket=%s key=%s', bucket, key)
     except Exception:
         logger.exception('R2 cleanup FAILED  bucket=%s key=%s', bucket, key)
@@ -171,7 +186,7 @@ def _upload_to_r2(bucket_name, path, file_content, content_type, retries=4):
     for attempt in range(retries):
         try:
             client.put_object(
-                Bucket=bucket_name,
+                Bucket=r2_bucket(bucket_name),
                 Key=path,
                 Body=file_content,
                 ContentType=content_type,
@@ -196,7 +211,7 @@ def _delete_from_r2(bucket_name, name):
     """Delete a file from Cloudflare R2 in a background thread."""
     try:
         client = _get_r2_client()
-        client.delete_object(Bucket=bucket_name, Key=name)
+        client.delete_object(Bucket=r2_bucket(bucket_name), Key=name)
         logger.info('R2 delete OK  bucket=%s path=%s', bucket_name, name)
     except Exception:
         logger.exception('R2 delete FAILED  bucket=%s path=%s', bucket_name, name)
@@ -218,7 +233,7 @@ def _delete_course_storage_from_r2(course_id_str, course_slug):
             try:
                 paginator = client.get_paginator('list_objects_v2')
                 keys_to_delete = []
-                for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+                for page in paginator.paginate(Bucket=r2_bucket(bucket), Prefix=prefix):
                     for obj in page.get('Contents', []):
                         keys_to_delete.append({'Key': obj['Key']})
 
@@ -227,7 +242,7 @@ def _delete_course_storage_from_r2(course_id_str, course_slug):
                     chunk_size = 1000
                     for i in range(0, len(keys_to_delete), chunk_size):
                         client.delete_objects(
-                            Bucket=bucket,
+                            Bucket=r2_bucket(bucket),
                             Delete={'Objects': keys_to_delete[i:i + chunk_size]},
                         )
                     logger.info('Deleted %d objects from R2 bucket=%s prefix=%s', len(keys_to_delete), bucket, prefix)

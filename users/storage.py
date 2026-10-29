@@ -7,6 +7,8 @@ File storage (avatars) now uses Cloudflare R2 via boto3.
 
 import uuid
 from django.conf import settings
+
+from formation.storage import r2_bucket
 from supabase import create_client, Client
 import boto3
 from botocore.config import Config
@@ -158,7 +160,7 @@ def upload_avatar(file, user_id: str) -> str:
 
     client = _get_r2_client()
     client.put_object(
-        Bucket='avatars',
+        Bucket=r2_bucket('avatars'),
         Key=object_key,
         Body=file_content,
         ContentType=content_type,
@@ -199,7 +201,7 @@ def delete_avatar(file_url: str) -> bool:
         else:
             object_key = file_url
 
-        client.delete_object(Bucket='avatars', Key=object_key)
+        client.delete_object(Bucket=r2_bucket('avatars'), Key=object_key)
         return True
     except Exception:
         return False

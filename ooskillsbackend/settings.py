@@ -48,6 +48,19 @@ if RENDER_EXTERNAL_HOSTNAME:
     ALLOWED_HOSTS.append(RENDER_EXTERNAL_HOSTNAME)
 
 
+def _env_list(name):
+    """Comma-separated env var → list of non-empty, stripped values."""
+    return [v.strip() for v in os.environ.get(name, '').split(',') if v.strip()]
+
+
+# Which deployment this is ("production", "staging", "local"). Surfaced by
+# /health so you can always tell which environment you're talking to.
+ENVIRONMENT = os.environ.get('ENVIRONMENT', 'production')
+
+# Per-environment hostnames (e.g. api-staging.ooskills.com) without code edits.
+ALLOWED_HOSTS += [h for h in _env_list('EXTRA_ALLOWED_HOSTS') if h not in ALLOWED_HOSTS]
+
+
 # Application definition
 
 INSTALLED_APPS = [
@@ -333,6 +346,12 @@ CORS_ALLOWED_ORIGINS = [
     "https://www.ooskills.com",
 ]
 
+# Per-environment frontend origins (e.g. https://staging.ooskills.com).
+CORS_ALLOWED_ORIGINS += [o for o in _env_list('EXTRA_CORS_ORIGINS') if o not in CORS_ALLOWED_ORIGINS]
+
+# Origins allowed to make CSRF-protected requests (Django admin over HTTPS).
+CSRF_TRUSTED_ORIGINS = _env_list('CSRF_TRUSTED_ORIGINS')
+
 CORS_ALLOW_CREDENTIALS = True
 
 # For development only - remove in production
@@ -422,7 +441,8 @@ if NGROK_URL:
     _ngrok_host = urlparse(NGROK_URL).hostname
     if _ngrok_host and _ngrok_host not in ALLOWED_HOSTS:
         ALLOWED_HOSTS.append(_ngrok_host)
-    CSRF_TRUSTED_ORIGINS = [NGROK_URL]
+    if NGROK_URL not in CSRF_TRUSTED_ORIGINS:
+        CSRF_TRUSTED_ORIGINS.append(NGROK_URL)
 
 
 # =============================================================================
@@ -443,6 +463,12 @@ R2_SECRET_ACCESS_KEY = os.environ.get('R2_SECRET_ACCESS_KEY', '')
 
 # S3-compatible endpoint (boto3 endpoint_url)
 R2_ENDPOINT_URL = f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com" if R2_ACCOUNT_ID else ''
+
+# Prefix applied to every physical R2 bucket name. Empty in production
+# (buckets stay "audios", "images", ...). Set to "staging-" on staging so it
+# reads and writes "staging-audios", "staging-images", ... and can never touch
+# production files.
+R2_BUCKET_PREFIX = os.environ.get('R2_BUCKET_PREFIX', '')
 
 # Public base URLs per bucket — set to your r2.dev subdomain or custom domain.
 # Example:  https://pub-abc123.r2.dev  or  https://cdn.ooskills.com

@@ -14,6 +14,7 @@ class CourseFilter(django_filters.FilterSet):
     price_min = django_filters.NumberFilter(field_name='price', lookup_expr='gte')
     price_max = django_filters.NumberFilter(field_name='price', lookup_expr='lte')
     search = django_filters.CharFilter(method='filter_search')
+    skills = django_filters.CharFilter(method='filter_skills')
 
     class Meta:
         model = Course
@@ -25,6 +26,17 @@ class CourseFilter(django_filters.FilterSet):
         return queryset.filter(
             Q(title__icontains=value) | Q(description__icontains=value)
         )
+
+    def filter_skills(self, queryset, name, value):
+        """?skills=Python,SQL — courses tagged with ANY of the comma-separated keywords."""
+        from django.db.models import Q
+        keywords = [k.strip() for k in value.split(',') if k.strip()]
+        if not keywords:
+            return queryset
+        query = Q()
+        for kw in keywords:
+            query |= Q(skills__contains=[kw])
+        return queryset.filter(query)
 
 
 class EnrollmentFilter(django_filters.FilterSet):

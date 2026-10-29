@@ -1,0 +1,57 @@
+name: Deploy Backend (staging)
+
+on:
+  push:
+    branches: [staging]
+  workflow_dispatch:
+
+# Never run two staging deploys at once.
+concurrency:
+  group: deploy-backend-staging
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to staging
+    if: github.ref == 'refs/heads/staging'
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
+      url: https://api-staging.ooskills.com/api/health/
+    steps:
+      - name: SSH deploy
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            set -e
+            chown -R ooskills:ooskills /var/www/ooskills-staging/ooskills-backend
+
+            su - ooskills -c '
+              set -e
+              cd /var/www/ooskills-staging/ooskills-backend
+              grep -q "^ENVIRONMENT=staging" .env || { echo "Refusing: .env is not a staging env"; exit 1; }
+              git fetch origin
+              git reset --hard origin/staging
+              venv/bin/pip install -q -r requirements.txt
+              venv/bin/python manage.py migrate --noinput
+              venv/bin/python manage.py collectstatic --noinput
+            '
+
+            systemctl restart ooskills-backend-staging
+
+            echo "Waiting for ooskills-backend-staging..."
+            for i in $(seq 1 20); do
+              if curl -fsS -H "Host: api-staging.ooskills.com" http://127.0.0.1:8001/api/health/ | grep -q '"environment": "staging"'; then
+                echo "Staging backend is healthy."
+                exit 0
+              fi
+              sleep 1
+            done
+
+            echo "ERROR: staging backend did not become healthy."
+            systemctl status ooskills-backend-staging -l --no-pager
+            journalctl -u ooskills-backend-staging -n 40 --no-pager
+            exit 1

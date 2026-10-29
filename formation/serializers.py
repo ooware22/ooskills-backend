@@ -240,7 +240,7 @@ class CourseListSerializer(serializers.ModelSerializer):
             'id', 'title', 'slug', 'category', 'level', 'duration',
             'rating', 'reviews', 'students', 'image', 'date',
             'price', 'originalPrice', 'discount', 'description',
-            'prerequisites', 'whatYouLearn', 'sections', 'materials',
+            'prerequisites', 'whatYouLearn', 'skills', 'sections', 'materials',
             'language', 'certificate', 'lastUpdated', 'status', 'totalSlides',
             'is_free',
         ]
@@ -293,7 +293,7 @@ class CourseDetailSerializer(serializers.ModelSerializer):
             'id', 'title', 'slug', 'category', 'level', 'duration',
             'rating', 'reviews', 'students', 'image', 'date',
             'price', 'originalPrice', 'discount', 'description',
-            'prerequisites', 'whatYouLearn', 'sections', 'materials',
+            'prerequisites', 'whatYouLearn', 'skills', 'sections', 'materials',
             'language', 'certificate', 'lastUpdated', 'status',
             'audioBasePath', 'totalModules', 'totalSlides', 'totalQuizQuestions',
             'is_free',
@@ -352,10 +352,28 @@ class CourseWriteSerializer(serializers.ModelSerializer):
             'title', 'slug', 'category', 'level', 'duration',
             'rating', 'reviews', 'students', 'image', 'date',
             'price', 'originalPrice', 'discount', 'description',
-            'prerequisites', 'whatYouLearn',
+            'prerequisites', 'whatYouLearn', 'skills',
             'language', 'certificate', 'lastUpdated',
             'status', 'audioBasePath', 'is_free',
         ]
+
+
+class CourseCatalogSerializer(serializers.ModelSerializer):
+    """
+    Lean, unpersonalized course listing for external consumers (Oosira's
+    CV gap analysis). No sections/materials and no per-user pricing, so the
+    whole published catalog can be served and cached in one response.
+    """
+    category = serializers.SlugRelatedField(slug_field='slug', read_only=True)
+
+    class Meta:
+        model = Course
+        fields = [
+            'id', 'slug', 'title', 'category', 'level', 'language',
+            'duration', 'price', 'originalPrice', 'is_free', 'image',
+            'certificate', 'skills', 'whatYouLearn', 'updated_at',
+        ]
+        read_only_fields = fields
 
 
 # ─── Enrollment ──────────────────────────────────────────────────────────────

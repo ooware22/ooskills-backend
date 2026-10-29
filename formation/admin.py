@@ -89,6 +89,11 @@ class CourseAdmin(admin.ModelAdmin):
             'classes': ('collapse',),
             'fields': ('prerequisites', 'whatYouLearn')
         }),
+        ('Compétences (recommandations Oosira)', {
+            'fields': ('skills',),
+            'description': 'Liste JSON de mots-clés issus de formation/data/skill_keywords_fr.csv, '
+                           'ex. ["Python", "SQL", "Gestion de projets"].',
+        }),
     )
 
     def get_urls(self):

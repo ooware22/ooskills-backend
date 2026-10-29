@@ -1,5 +1,6 @@
 from django.http import JsonResponse
 from django.db import connection
+from django.conf import settings
 from django.core.cache import cache
 
 def health_check(request):
@@ -9,6 +10,7 @@ def health_check(request):
     """
     health_status = {
         "status": "healthy",
+        "environment": getattr(settings, "ENVIRONMENT", "production"),
         "database": "unknown",
         "cache": "unknown"
     }

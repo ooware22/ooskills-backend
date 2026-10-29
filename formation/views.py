@@ -37,7 +37,7 @@ from content.models import SiteSettings
 from formation.serializers import (
     CategorySerializer, CertificateSerializer,
     CourseDetailSerializer, CourseListSerializer, CourseWriteSerializer,
-    CourseMaterialSerializer,
+    CourseCatalogSerializer, CourseMaterialSerializer,
     CourseGiftSerializer, CourseGiftSendSerializer, CourseGiftClaimSerializer,
     CourseRatingSerializer, CourseRatingCreateSerializer,
     EnrollmentCreateSerializer, EnrollmentSerializer,
@@ -431,6 +431,30 @@ class CourseViewSet(DBRetryReadMixin, viewsets.ModelViewSet):
         course = self.get_object()
         ratings = CourseRating.objects.filter(course=course).select_related('user')
         return Response(CourseRatingSerializer(ratings, many=True).data)
+
+    @extend_schema(summary='Lean published catalog with skill tags (for Oosira)')
+    @action(detail=False, methods=['get'], url_path='catalog',
+            permission_classes=[AllowAny], filter_backends=[], pagination_class=None)
+    def catalog(self, request):
+        """
+        GET /api/formation/courses/catalog/
+
+        Every published course in one unpaginated, unpersonalized response —
+        what Oosira's gap analysis syncs and matches missing CV skills
+        against. Always published-only, even for admins. Cached under a
+        'course_list' key so course saves bust it with the list cache.
+        """
+        key = 'course_list_catalog'
+        cached = cache.get(key)
+        if cached is not None:
+            return Response(cached)
+        courses = self._run_with_db_retry(lambda: list(
+            Course.objects.filter(status=CourseStatus.PUBLISHED)
+            .select_related('category').order_by('slug')
+        ))
+        data = CourseCatalogSerializer(courses, many=True).data
+        cache.set(key, data, COURSE_LIST_TTL)
+        return Response(data)
 
     @extend_schema(summary='Toggle wishlist status for a course')
     @action(detail=True, methods=['post'], url_path='toggle-wishlist',
