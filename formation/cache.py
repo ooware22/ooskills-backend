@@ -33,24 +33,33 @@ def _hash_params(params: dict) -> str:
     return hashlib.md5(stable.encode()).hexdigest()[:12]
 
 
+# Bump when a cached payload's shape or access rules change, so entries
+# written by older code are never served again (v2: lesson files/text and
+# material links are stripped from public responses).
+CACHE_VERSION = 'v2'
+
+# Access scopes that may share a cache (see content_access.ContentAccess).
+CACHE_SCOPES = ('public', 'admin')
+
+
 def course_list_key(query_params: dict, is_admin: bool = False) -> str:
     """Cache key for the course catalog list view."""
     prefix = 'course_list_admin' if is_admin else 'course_list'
     h = _hash_params(query_params)
-    return f'{prefix}:{h}'
+    return f'{prefix}:{CACHE_VERSION}:{h}'
 
 
-def course_detail_key(slug: str) -> str:
-    return f'course_detail:{slug}'
+def course_detail_key(slug: str, scope: str = 'public') -> str:
+    return f'course_detail:{CACHE_VERSION}:{scope}:{slug}'
 
 
 def category_list_key() -> str:
     return 'categories:all'
 
 
-def section_list_key(query_params: dict) -> str:
+def section_list_key(query_params: dict, scope: str = 'public') -> str:
     h = _hash_params(query_params)
-    return f'section_list:{h}'
+    return f'section_list:{CACHE_VERSION}:{scope}:{h}'
 
 
 def enrollment_key(user_id, course_id) -> str:
@@ -90,8 +99,8 @@ def invalidate_course_list() -> None:
 
 
 def invalidate_course_detail(slug: str) -> None:
-    """Bust a single course detail cache entry."""
-    cache.delete(course_detail_key(slug))
+    """Bust a single course's detail cache entries (every access scope)."""
+    cache.delete_many([course_detail_key(slug, scope) for scope in CACHE_SCOPES])
 
 
 def invalidate_course_caches(slug: str | None = None) -> None:

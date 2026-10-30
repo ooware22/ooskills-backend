@@ -55,6 +55,7 @@ from formation.serializers import (
 )
 from formation.permissions import IsAdminOrReadOnly, IsOwnerOrAdmin, IsEnrolledStudent
 from users.permissions import IsAdmin
+from formation.content_access import access_for_request
 from formation.filters import CourseFilter, EnrollmentFilter, OrderFilter
 from formation.services.progress_service import autosave_progress
 from formation.services.quiz_service import submit_quiz, QuizLimitExceeded
@@ -293,23 +294,29 @@ class CourseViewSet(DBRetryReadMixin, viewsets.ModelViewSet):
             item['welcome_discount_percentage'] = welcome_discount_percentage
 
     def list(self, request, *args, **kwargs):
-        is_admin = request.user.is_authenticated and request.user.is_admin
-        key = course_list_key(dict(request.query_params), is_admin=is_admin)
-        cached = cache.get(key)
+        # The list nests material links, which differ per enrolled user, so
+        # only the uniform public/admin views may come from the shared cache.
+        scope = access_for_request(request).cache_scope
+        key = course_list_key(dict(request.query_params), is_admin=scope == 'admin') if scope else None
+        cached = cache.get(key) if key else None
         if cached is not None:
             self._apply_live_pricing(cached.get('results', cached) if isinstance(cached, dict) else cached)
             return Response(cached)
         response = self._run_with_db_retry(
             lambda: super(CourseViewSet, self).list(request, *args, **kwargs)
         )
-        cache.set(key, response.data, COURSE_LIST_TTL)
+        if key:
+            cache.set(key, response.data, COURSE_LIST_TTL)
         data = response.data
         self._apply_live_pricing(data.get('results', data) if isinstance(data, dict) else data)
         return response
 
     def retrieve(self, request, *args, **kwargs):
         slug = kwargs.get('slug', self.kwargs.get('slug'))
-        key = course_detail_key(slug) if slug else None
+        # Enrolled users get their paid lessons, so their response is personal
+        # and bypasses the shared cache; public and admin views are uniform.
+        scope = access_for_request(request).cache_scope
+        key = course_detail_key(slug, scope) if (slug and scope) else None
         if key:
             cached = cache.get(key)
             if cached is not None:
@@ -625,14 +632,16 @@ class SectionViewSet(DBRetryReadMixin, viewsets.ModelViewSet):
         return SectionDetailSerializer
 
     def list(self, request, *args, **kwargs):
-        key = section_list_key(dict(request.query_params))
-        cached = cache.get(key)
+        scope = access_for_request(request).cache_scope
+        key = section_list_key(dict(request.query_params), scope) if scope else None
+        cached = cache.get(key) if key else None
         if cached is not None:
             return Response(cached)
         response = self._run_with_db_retry(
             lambda: super(SectionViewSet, self).list(request, *args, **kwargs)
         )
-        cache.set(key, response.data, SECTION_LIST_TTL)
+        if key:
+            cache.set(key, response.data, SECTION_LIST_TTL)
         return response
 
     def retrieve(self, request, *args, **kwargs):

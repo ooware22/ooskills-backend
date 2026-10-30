@@ -10,6 +10,10 @@ The frontend picks the right language based on user preference.
 from django.db.models import Sum
 from rest_framework import serializers
 
+from formation.content_access import (
+    PROTECTED_LESSON_FIELDS, PROTECTED_MATERIAL_FIELDS, access_from_context,
+)
+
 from formation.models import (
     Category, Certificate, Course, CourseMaterial, CourseGift, CourseRating,
     Enrollment, EnrollmentStatus, FinalQuiz, FinalQuizAttempt, FinalQuizAudio,
@@ -126,6 +130,15 @@ class CourseMaterialSerializer(serializers.ModelSerializer):
         fields = ['id', 'course', 'name', 'type', 'size', 'file', 'url', 'download_url', 'sequence']
         read_only_fields = ['download_url']
 
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if not access_from_context(self.context).allows(instance.course):
+            # Name/type/size stay visible; the download links don't.
+            for field in PROTECTED_MATERIAL_FIELDS:
+                if field in data:
+                    data[field] = None
+        return data
+
 
 # ─── Module ──────────────────────────────────────────────────────────────────
 
@@ -140,6 +153,17 @@ class ModuleSerializer(serializers.ModelSerializer):
             'id', 'section', 'title', 'sequence', 'audioFileIndex',
             'lessons', 'duration', 'lessons_list',
         ]
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if not access_from_context(self.context).allows_section(instance.section):
+            # Keep titles/durations for the course outline; drop the paid
+            # audio, slide images and slide text.
+            for lesson in data.get('lessons_list') or []:
+                for field in PROTECTED_LESSON_FIELDS:
+                    if field in lesson:
+                        lesson[field] = None
+        return data
 
     def get_lessons(self, obj):
         if hasattr(obj, '_lessons_count'):
