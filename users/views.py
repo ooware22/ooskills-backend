@@ -20,6 +20,7 @@ from rest_framework.throttling import ScopedRateThrottle
 from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import TokenError, InvalidToken
+from rest_framework_simplejwt.utils import get_md5_hash_password
 from django.contrib.auth import update_session_auth_hash
 
 import logging
@@ -288,30 +289,43 @@ class ProfileView(generics.RetrieveUpdateAPIView):
 
 class ChangePasswordView(generics.UpdateAPIView):
     """
-    POST /api/auth/change-password/
-    
-    Change user's password.
+    POST or PUT /api/auth/change-password/
+
+    Change the password of the logged-in user.
+
+    Every token issued before the change stops working (SIMPLE_JWT
+    CHECK_REVOKE_TOKEN), so other browsers are logged out. The current browser
+    receives a fresh access token in the body and a fresh refresh cookie, so the
+    user stays logged in here.
     """
     permission_classes = [IsAuthenticated]
     serializer_class = ChangePasswordSerializer
-    
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'auth_password_change'
+
     def get_object(self):
         return self.request.user
-    
+
+    def post(self, request, *args, **kwargs):
+        return self.update(request, *args, **kwargs)
+
     def update(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        
+
         user = self.get_object()
         user.set_password(serializer.validated_data['new_password'])
-        user.save()
-        
-        # Update session to prevent logout
+        user.save(update_fields=['password', 'updated_at'])
+
+        # Keep the Django admin session (if any) valid.
         update_session_auth_hash(request, user)
-        
-        return Response({
-            'message': 'Mot de passe modifié avec succès.'
+
+        refresh = RefreshToken.for_user(user)
+        response = Response({
+            'message': 'Mot de passe modifié avec succès.',
+            'tokens': {'access': str(refresh.access_token)},
         })
+        return _set_refresh_cookie(response, str(refresh))
 
 
 class ForgotPasswordView(APIView):
@@ -441,6 +455,12 @@ class CookieTokenRefreshView(APIView):
             )
         try:
             token = RefreshToken(refresh_str)
+            # A refresh token issued before the last password change (or for a
+            # deleted / deactivated account) must not mint new access tokens.
+            user = User.objects.filter(id=token.get('user_id')).first()
+            if (user is None or not user.is_active
+                    or token.get('hash_password') != get_md5_hash_password(user.password)):
+                raise InvalidToken('Session expirée. Veuillez vous reconnecter.')
             access = str(token.access_token)
             # Rotate: generate a new refresh token and blacklist the old one
             new_refresh = str(token)

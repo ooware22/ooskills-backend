@@ -317,7 +317,11 @@ class UserProfileSerializer(serializers.ModelSerializer):
     display_name = serializers.ReadOnlyField()
     avatar_display_url = serializers.ReadOnlyField()
     referral_code = serializers.SerializerMethodField()
-    
+    # False for accounts created with Google/Facebook that never set a password:
+    # the settings page then explains how to create one instead of asking for
+    # a "current password" the user does not have.
+    has_password = serializers.SerializerMethodField()
+
     class Meta:
         model = User
         fields = [
@@ -327,7 +331,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'role', 'status', 'email_verified',
             'language', 'newsletter_subscribed',
             'date_joined', 'last_login',
-            'referral_code', 'referral_balance'
+            'referral_code', 'referral_balance', 'has_password',
         ]
         read_only_fields = [
             'id', 'email', 'role', 'status', 'email_verified',
@@ -339,6 +343,9 @@ class UserProfileSerializer(serializers.ModelSerializer):
             return obj.referral_code.code
         except ReferralCode.DoesNotExist:
             return None
+
+    def get_has_password(self, obj):
+        return obj.has_usable_password()
 
 
 class UserProfileUpdateSerializer(serializers.ModelSerializer):

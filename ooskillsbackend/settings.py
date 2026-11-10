@@ -251,6 +251,7 @@ REST_FRAMEWORK = {
         'auth_refresh': '30/min',
         'auth_email': '5/min',        # resend verification
         'auth_password_reset': '3/min',
+        'auth_password_change': '5/min',  # guessing the current password
         # API actions with real-world cost
         'enrollment': '20/hour',
         'quiz_attempt': '10/hour',
@@ -335,6 +336,11 @@ SIMPLE_JWT = {
     'AUTH_HEADER_TYPES': ('Bearer',),
     'USER_ID_FIELD': 'id',  # UUID field
     'USER_ID_CLAIM': 'user_id',
+    # Every token carries a fingerprint of the password hash. Changing or
+    # resetting the password changes the hash, so all tokens issued before it
+    # (other browsers, a stolen token) stop working at once.
+    'CHECK_REVOKE_TOKEN': True,
+    'REVOKE_TOKEN_CLAIM': 'hash_password',
 }
 
 
