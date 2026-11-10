@@ -21,6 +21,7 @@ from formation.storage import SupabaseAudioStorage, audio_upload_path
 from formation.storage import SupabaseImageStorage, course_image_upload_path
 from formation.storage import SupabaseMaterialStorage, material_upload_path
 from formation.storage import SupabaseDiapositiveStorage, diapositive_upload_path
+from formation.skills_vocab import validate_skill_keywords
 from content.models import (
     TranslatableFieldMixin,
     validate_translation_json,
@@ -101,6 +102,13 @@ class Course(models.Model):
         'Ce que vous apprendrez',
         default=list, blank=True,
         help_text='["item1", "item2", ...] — simple array of strings',
+    )
+    skills = models.JSONField(
+        'Compétences',
+        default=list, blank=True,
+        validators=[validate_skill_keywords],
+        help_text='["Python", "SQL", ...] — keywords from formation/data/skill_keywords_fr.csv '
+                  '(shared with Oosira for CV gap recommendations)',
     )
 
     # --- Non-translatable fields ---

@@ -48,6 +48,30 @@ if RENDER_EXTERNAL_HOSTNAME:
     ALLOWED_HOSTS.append(RENDER_EXTERNAL_HOSTNAME)
 
 
+def _env_list(name):
+    """Comma-separated env var → list of non-empty, stripped values."""
+    return [v.strip() for v in os.environ.get(name, '').split(',') if v.strip()]
+
+
+# Which deployment this is ("production", "staging", "local"). Surfaced by
+# /health so you can always tell which environment you're talking to.
+ENVIRONMENT = os.environ.get('ENVIRONMENT', 'production')
+
+# Per-environment hostnames (e.g. api-staging.ooskills.com) without code edits.
+ALLOWED_HOSTS += [h for h in _env_list('EXTRA_ALLOWED_HOSTS') if h not in ALLOWED_HOSTS]
+
+
+# HTTPS hardening for deployed environments (nginx terminates TLS and forwards
+# X-Forwarded-Proto). Sends Strict-Transport-Security on API responses and
+# keeps the admin's session / CSRF cookies off plain HTTP.
+if not DEBUG:
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+    SECURE_HSTS_SECONDS = int(os.environ.get('SECURE_HSTS_SECONDS', str(60 * 60 * 24 * 365)))
+    SECURE_CONTENT_TYPE_NOSNIFF = True
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+
+
 # Application definition
 
 INSTALLED_APPS = [
@@ -220,7 +244,8 @@ REST_FRAMEWORK = {
         'anon': '100/hour',
         'user': '1000/hour',
         # Auth — tightly limited to prevent brute-force / abuse
-        'auth_login': '10/min',
+        'auth_login': '5/min',          # per client IP
+        'auth_login_email': '20/hour',  # per targeted account, whatever the IP
         'auth_register': '5/min',
         'auth_social': '10/min',
         'auth_refresh': '30/min',
@@ -248,6 +273,16 @@ REST_FRAMEWORK = {
     'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
 }
 
+# Number of trusted reverse proxies in front of gunicorn. Rate limits are
+# counted per client IP, and DRF reads that IP from X-Forwarded-For. Left
+# unset, DRF uses the *whole* header as the client identity: a caller can then
+# dodge every limit by sending a different X-Forwarded-For value each time, and
+# a client reached through varying Cloudflare edges is counted as many clients.
+# Set NUM_PROXIES to the real number of proxies (Cloudflare + nginx = 2).
+_num_proxies = os.environ.get('NUM_PROXIES', '').strip()
+if _num_proxies:
+    REST_FRAMEWORK['NUM_PROXIES'] = int(_num_proxies)
+
 
 # =============================================================================
 # DRF-SPECTACULAR (SWAGGER/OPENAPI) CONFIGURATION
@@ -258,6 +293,12 @@ SPECTACULAR_SETTINGS = {
     'DESCRIPTION': 'API documentation for OOSkills Platform - E-learning platform for Algeria',
     'VERSION': '1.0.0',
     'SERVE_INCLUDE_SCHEMA': False,
+    # The schema lists every endpoint, admin ones included. Outside local
+    # development it is served to staff only (log in through /admin/ first).
+    'SERVE_PERMISSIONS': [
+        'rest_framework.permissions.AllowAny' if DEBUG
+        else 'rest_framework.permissions.IsAdminUser'
+    ],
     'COMPONENT_SPLIT_REQUEST': True,
     'SWAGGER_UI_SETTINGS': {
         'deepLinking': True,
@@ -333,6 +374,12 @@ CORS_ALLOWED_ORIGINS = [
     "https://www.ooskills.com",
 ]
 
+# Per-environment frontend origins (e.g. https://staging.ooskills.com).
+CORS_ALLOWED_ORIGINS += [o for o in _env_list('EXTRA_CORS_ORIGINS') if o not in CORS_ALLOWED_ORIGINS]
+
+# Origins allowed to make CSRF-protected requests (Django admin over HTTPS).
+CSRF_TRUSTED_ORIGINS = _env_list('CSRF_TRUSTED_ORIGINS')
+
 CORS_ALLOW_CREDENTIALS = True
 
 # For development only - remove in production
@@ -395,6 +442,11 @@ RESEND_API_KEY = os.environ.get('RESEND_API_KEY', '')
 DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', 'resend@ooskills.com')
 CONTACT_NOTIFICATION_EMAIL = os.environ.get('CONTACT_NOTIFICATION_EMAIL', 'sbboxmail3@gmail.com')
 
+# Recipients allowed to receive mail from this environment (see
+# ooskillsbackend/mailer.py). Empty = no restriction (production). On staging,
+# set e.g. "@ooskills.com" so test sign-ups never mail real people.
+EMAIL_RECIPIENT_ALLOWLIST = _env_list('EMAIL_RECIPIENT_ALLOWLIST')
+
 
 # =============================================================================
 # FRONTEND CONFIGURATION
@@ -422,7 +474,8 @@ if NGROK_URL:
     _ngrok_host = urlparse(NGROK_URL).hostname
     if _ngrok_host and _ngrok_host not in ALLOWED_HOSTS:
         ALLOWED_HOSTS.append(_ngrok_host)
-    CSRF_TRUSTED_ORIGINS = [NGROK_URL]
+    if NGROK_URL not in CSRF_TRUSTED_ORIGINS:
+        CSRF_TRUSTED_ORIGINS.append(NGROK_URL)
 
 
 # =============================================================================
@@ -443,6 +496,12 @@ R2_SECRET_ACCESS_KEY = os.environ.get('R2_SECRET_ACCESS_KEY', '')
 
 # S3-compatible endpoint (boto3 endpoint_url)
 R2_ENDPOINT_URL = f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com" if R2_ACCOUNT_ID else ''
+
+# Prefix applied to every physical R2 bucket name. Empty in production
+# (buckets stay "audios", "images", ...). Set to "staging-" on staging so it
+# reads and writes "staging-audios", "staging-images", ... and can never touch
+# production files.
+R2_BUCKET_PREFIX = os.environ.get('R2_BUCKET_PREFIX', '')
 
 # Public base URLs per bucket — set to your r2.dev subdomain or custom domain.
 # Example:  https://pub-abc123.r2.dev  or  https://cdn.ooskills.com

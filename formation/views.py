@@ -37,7 +37,7 @@ from content.models import SiteSettings
 from formation.serializers import (
     CategorySerializer, CertificateSerializer,
     CourseDetailSerializer, CourseListSerializer, CourseWriteSerializer,
-    CourseMaterialSerializer,
+    CourseCatalogSerializer, CourseMaterialSerializer,
     CourseGiftSerializer, CourseGiftSendSerializer, CourseGiftClaimSerializer,
     CourseRatingSerializer, CourseRatingCreateSerializer,
     EnrollmentCreateSerializer, EnrollmentSerializer,
@@ -55,6 +55,7 @@ from formation.serializers import (
 )
 from formation.permissions import IsAdminOrReadOnly, IsOwnerOrAdmin, IsEnrolledStudent
 from users.permissions import IsAdmin
+from formation.content_access import access_for_request
 from formation.filters import CourseFilter, EnrollmentFilter, OrderFilter
 from formation.services.progress_service import autosave_progress
 from formation.services.quiz_service import submit_quiz, QuizLimitExceeded
@@ -307,26 +308,31 @@ class CourseViewSet(DBRetryReadMixin, viewsets.ModelViewSet):
             data = response.data
             self._apply_live_pricing(data.get('results', data) if isinstance(data, dict) else data)
             return response
-        key = course_list_key(dict(request.query_params), is_admin=is_admin)
-        cached = cache.get(key)
+        # The list nests material links, which differ per enrolled user, so
+        # only the uniform public/admin views may come from the shared cache.
+        scope = access_for_request(request).cache_scope
+        key = course_list_key(dict(request.query_params), is_admin=scope == 'admin') if scope else None
+        cached = cache.get(key) if key else None
         if cached is not None:
             self._apply_live_pricing(cached.get('results', cached) if isinstance(cached, dict) else cached)
             return Response(cached)
         response = self._run_with_db_retry(
             lambda: super(CourseViewSet, self).list(request, *args, **kwargs)
         )
-        cache.set(key, response.data, COURSE_LIST_TTL)
+        if key:
+            cache.set(key, response.data, COURSE_LIST_TTL)
         data = response.data
         self._apply_live_pricing(data.get('results', data) if isinstance(data, dict) else data)
         return response
 
     def retrieve(self, request, *args, **kwargs):
         slug = kwargs.get('slug', self.kwargs.get('slug'))
-        # Same reasoning as list(); also, admins can see draft courses, and the detail
-        # cache key is slug-only — caching an admin's view of a draft would serve it to
-        # the public from cache.
+        # Admins skip the cache (they must see their own edits at once, and can see
+        # drafts). Enrolled users get their paid lessons, so their response is
+        # personal and bypasses the shared cache too; public views are uniform.
         is_admin = request.user.is_authenticated and request.user.is_admin
-        key = course_detail_key(slug) if slug and not is_admin else None
+        scope = access_for_request(request).cache_scope
+        key = course_detail_key(slug, scope) if (slug and scope and not is_admin) else None
         if key:
             cached = cache.get(key)
             if cached is not None:
@@ -448,6 +454,30 @@ class CourseViewSet(DBRetryReadMixin, viewsets.ModelViewSet):
         course = self.get_object()
         ratings = CourseRating.objects.filter(course=course).select_related('user')
         return Response(CourseRatingSerializer(ratings, many=True).data)
+
+    @extend_schema(summary='Lean published catalog with skill tags (for Oosira)')
+    @action(detail=False, methods=['get'], url_path='catalog',
+            permission_classes=[AllowAny], filter_backends=[], pagination_class=None)
+    def catalog(self, request):
+        """
+        GET /api/formation/courses/catalog/
+
+        Every published course in one unpaginated, unpersonalized response —
+        what Oosira's gap analysis syncs and matches missing CV skills
+        against. Always published-only, even for admins. Cached under a
+        'course_list' key so course saves bust it with the list cache.
+        """
+        key = 'course_list_catalog'
+        cached = cache.get(key)
+        if cached is not None:
+            return Response(cached)
+        courses = self._run_with_db_retry(lambda: list(
+            Course.objects.filter(status=CourseStatus.PUBLISHED)
+            .select_related('category').order_by('slug')
+        ))
+        data = CourseCatalogSerializer(courses, many=True).data
+        cache.set(key, data, COURSE_LIST_TTL)
+        return Response(data)
 
     @extend_schema(summary='Toggle wishlist status for a course')
     @action(detail=True, methods=['post'], url_path='toggle-wishlist',
@@ -618,14 +648,16 @@ class SectionViewSet(DBRetryReadMixin, viewsets.ModelViewSet):
         return SectionDetailSerializer
 
     def list(self, request, *args, **kwargs):
-        key = section_list_key(dict(request.query_params))
-        cached = cache.get(key)
+        scope = access_for_request(request).cache_scope
+        key = section_list_key(dict(request.query_params), scope) if scope else None
+        cached = cache.get(key) if key else None
         if cached is not None:
             return Response(cached)
         response = self._run_with_db_retry(
             lambda: super(SectionViewSet, self).list(request, *args, **kwargs)
         )
-        cache.set(key, response.data, SECTION_LIST_TTL)
+        if key:
+            cache.set(key, response.data, SECTION_LIST_TTL)
         return response
 
     def retrieve(self, request, *args, **kwargs):
@@ -1086,7 +1118,11 @@ class OrderViewSet(
         order = Order.objects.create(
             user=request.user,
             total=total,
-            paymentMethod=ser.validated_data['paymentMethod'],
+            # A zero-total order (free course, 100 % promo, wallet) is recorded
+            # as "free", never under a payment method that did not take place.
+            paymentMethod=(
+                ser.validated_data['paymentMethod'] if total >= 10 else PaymentMethod.FREE
+            ),
             paymentRef=ser.validated_data.get('paymentRef', ''),
         )
 
@@ -2450,7 +2486,9 @@ def presigned_batch_upload_url_view(request):
 class MarketingCampaignViewSet(viewsets.ModelViewSet):
     queryset = MarketingCampaign.objects.all()
     serializer_class = MarketingCampaignSerializer
-    permission_classes = [IsAdminOrReadOnly]
+    # Admin-only, including reads: the full list contains past and future
+    # campaigns. The public site only needs /active/ below.
+    permission_classes = [IsAdmin]
 
     @action(detail=False, methods=['get'], permission_classes=[AllowAny])
     def active(self, request):

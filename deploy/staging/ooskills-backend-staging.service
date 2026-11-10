@@ -1,0 +1,21 @@
+[Unit]
+Description=OOSkills backend (STAGING) — gunicorn on 127.0.0.1:8001
+After=network.target
+
+[Service]
+User=ooskills
+Group=ooskills
+WorkingDirectory=/var/www/ooskills-staging/ooskills-backend
+# settings.py loads .env from this directory via python-dotenv.
+ExecStart=/var/www/ooskills-staging/ooskills-backend/venv/bin/gunicorn \
+    ooskillsbackend.wsgi:application \
+    --bind 127.0.0.1:8001 \
+    --workers 2 \
+    --timeout 120 \
+    --access-logfile - \
+    --error-logfile -
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

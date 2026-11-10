@@ -10,6 +10,7 @@ from datetime import timedelta
 from django.conf import settings
 from django.utils import timezone
 import resend
+from ooskillsbackend.mailer import send_email
 
 logger = logging.getLogger(__name__)
 
@@ -135,7 +136,7 @@ Si vous n'avez pas créé de compte sur OOSkills, ignorez simplement cet email.
         
         # Send email via Resend
         logger.info(f"[EMAIL] Sending verification email to {user.email} via Resend")
-        r = resend.Emails.send({
+        r = send_email({
             "from": settings.DEFAULT_FROM_EMAIL,
             "to": [user.email],
             "subject": subject,
@@ -209,7 +210,7 @@ Visitez: {settings.FRONTEND_URL}
 © 2024 OOSkills. Tous droits réservés.
         """
         
-        resend.Emails.send({
+        send_email({
             "from": settings.DEFAULT_FROM_EMAIL,
             "to": [user.email],
             "subject": subject,
@@ -379,7 +380,7 @@ Si vous n'avez pas demandé la réinitialisation de votre mot de passe, ignorez 
         
         # Send email via Resend
         logger.info(f"[EMAIL] Sending password reset email to {user.email} via Resend")
-        r = resend.Emails.send({
+        r = send_email({
             "from": settings.DEFAULT_FROM_EMAIL,
             "to": [user.email],
             "subject": subject,

@@ -64,6 +64,14 @@ REST_FRAMEWORK = {
 }
 
 
+# Test the API docs as they are served once deployed (DEBUG=False): staff only.
+# Locally DEBUG is usually True, which would leave them open to everyone.
+SPECTACULAR_SETTINGS = {
+    **SPECTACULAR_SETTINGS,
+    'SERVE_PERMISSIONS': ['rest_framework.permissions.IsAdminUser'],
+}
+
+
 # ---------------------------------------------------------------------------
 # Neutralize Postgres-only GIN indexes when building the SQLite schema. Two
 # GinIndexes live on the Course model; SQLite can't emit `USING gin`, so on any

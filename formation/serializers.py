@@ -10,11 +10,15 @@ The frontend picks the right language based on user preference.
 from django.db.models import Sum
 from rest_framework import serializers
 
+from formation.content_access import (
+    PROTECTED_LESSON_FIELDS, PROTECTED_MATERIAL_FIELDS, access_from_context,
+)
+
 from formation.models import (
     Category, Certificate, Course, CourseMaterial, CourseGift, CourseRating,
     Enrollment, EnrollmentStatus, FinalQuiz, FinalQuizAttempt, FinalQuizAudio,
     Lesson, LessonNote, LessonProgress, Order, OrderItem, OrderStatus,
-    PromoCode, PromoCodeUsage,
+    PaymentMethod, PromoCode, PromoCodeUsage,
     QuizAttempt, Quiz, QuizQuestion, Section, Module, ShareToken, Wishlist,
     MarketingCampaign,
 )
@@ -126,6 +130,15 @@ class CourseMaterialSerializer(serializers.ModelSerializer):
         fields = ['id', 'course', 'name', 'type', 'size', 'file', 'url', 'download_url', 'sequence']
         read_only_fields = ['download_url']
 
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if not access_from_context(self.context).allows(instance.course):
+            # Name/type/size stay visible; the download links don't.
+            for field in PROTECTED_MATERIAL_FIELDS:
+                if field in data:
+                    data[field] = None
+        return data
+
 
 # ─── Module ──────────────────────────────────────────────────────────────────
 
@@ -140,6 +153,17 @@ class ModuleSerializer(serializers.ModelSerializer):
             'id', 'section', 'title', 'sequence', 'audioFileIndex',
             'lessons', 'duration', 'lessons_list',
         ]
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if not access_from_context(self.context).allows_section(instance.section):
+            # Keep titles/durations for the course outline; drop the paid
+            # audio, slide images and slide text.
+            for lesson in data.get('lessons_list') or []:
+                for field in PROTECTED_LESSON_FIELDS:
+                    if field in lesson:
+                        lesson[field] = None
+        return data
 
     def get_lessons(self, obj):
         if hasattr(obj, '_lessons_count'):
@@ -240,7 +264,7 @@ class CourseListSerializer(serializers.ModelSerializer):
             'id', 'title', 'slug', 'category', 'level', 'duration',
             'rating', 'reviews', 'students', 'image', 'date',
             'price', 'originalPrice', 'discount', 'description',
-            'prerequisites', 'whatYouLearn', 'sections', 'materials',
+            'prerequisites', 'whatYouLearn', 'skills', 'sections', 'materials',
             'language', 'certificate', 'lastUpdated', 'status', 'totalSlides',
             'is_free', 'created_at',
         ]
@@ -293,7 +317,7 @@ class CourseDetailSerializer(serializers.ModelSerializer):
             'id', 'title', 'slug', 'category', 'level', 'duration',
             'rating', 'reviews', 'students', 'image', 'date',
             'price', 'originalPrice', 'discount', 'description',
-            'prerequisites', 'whatYouLearn', 'sections', 'materials',
+            'prerequisites', 'whatYouLearn', 'skills', 'sections', 'materials',
             'language', 'certificate', 'lastUpdated', 'status',
             'audioBasePath', 'totalModules', 'totalSlides', 'totalQuizQuestions',
             'is_free',
@@ -352,10 +376,28 @@ class CourseWriteSerializer(serializers.ModelSerializer):
             'title', 'slug', 'category', 'level', 'duration',
             'rating', 'reviews', 'students', 'image', 'date',
             'price', 'originalPrice', 'discount', 'description',
-            'prerequisites', 'whatYouLearn',
+            'prerequisites', 'whatYouLearn', 'skills',
             'language', 'certificate', 'lastUpdated',
             'status', 'audioBasePath', 'is_free',
         ]
+
+
+class CourseCatalogSerializer(serializers.ModelSerializer):
+    """
+    Lean, unpersonalized course listing for external consumers (Oosira's
+    CV gap analysis). No sections/materials and no per-user pricing, so the
+    whole published catalog can be served and cached in one response.
+    """
+    category = serializers.SlugRelatedField(slug_field='slug', read_only=True)
+
+    class Meta:
+        model = Course
+        fields = [
+            'id', 'slug', 'title', 'category', 'level', 'language',
+            'duration', 'price', 'originalPrice', 'is_free', 'image',
+            'certificate', 'skills', 'whatYouLearn', 'updated_at',
+        ]
+        read_only_fields = fields
 
 
 # ─── Enrollment ──────────────────────────────────────────────────────────────
@@ -612,10 +654,22 @@ class OrderSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'user', 'total', 'status', 'created_at', 'updated_at']
 
 
+# Payment methods a customer may pick at checkout. Every one of them goes
+# through Chargily, so an order can only become "paid" once Chargily says so.
+# Other PaymentMethod values (ccp, baridimob, card, free) are never accepted
+# from the client: "free" is set by the server when the total is zero.
+CHECKOUT_PAYMENT_METHODS = [
+    (PaymentMethod.EDAHABIA.value, PaymentMethod.EDAHABIA.label),
+    (PaymentMethod.CIB.value, PaymentMethod.CIB.label),
+]
+
+
 class OrderCreateSerializer(serializers.Serializer):
     """Input for creating an order."""
-    course_ids = serializers.ListField(child=serializers.UUIDField())
-    paymentMethod = serializers.CharField(max_length=30)
+    course_ids = serializers.ListField(
+        child=serializers.UUIDField(), allow_empty=False, max_length=20,
+    )
+    paymentMethod = serializers.ChoiceField(choices=CHECKOUT_PAYMENT_METHODS)
     paymentRef = serializers.CharField(max_length=200, required=False, default='')
     # Optional promo code to apply at checkout
     promo_code = serializers.CharField(max_length=50, required=False, allow_blank=True, default='')
@@ -789,7 +843,9 @@ class CourseGiftSendSerializer(serializers.Serializer):
     course_id = serializers.UUIDField()
     recipient_email = serializers.EmailField()
     message = serializers.CharField(required=False, allow_blank=True, default='')
-    paymentMethod = serializers.CharField(max_length=30, required=False, default='edahabia')
+    paymentMethod = serializers.ChoiceField(
+        choices=CHECKOUT_PAYMENT_METHODS, required=False, default=PaymentMethod.EDAHABIA.value,
+    )
     paymentRef = serializers.CharField(max_length=200, required=False, allow_blank=True, default='')
     promo_code = serializers.CharField(max_length=50, required=False, allow_blank=True, default='')
     use_wallet = serializers.BooleanField(required=False, default=False)

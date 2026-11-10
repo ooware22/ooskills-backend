@@ -16,7 +16,7 @@ class PaymentRequired(Exception):
     """Raised when a paid course is enrolled without a settled order."""
 
 
-def _course_is_free(course: Course) -> bool:
+def course_is_free(course: Course) -> bool:
     """A course is free when explicitly flagged or priced at zero."""
     return bool(getattr(course, 'is_free', False)) or (course.price or 0) == 0
 
@@ -30,7 +30,7 @@ def has_entitlement(user, course: Course) -> bool:
     for "did they pay?" — the payment provider, promo/gift codes and order
     workflow all converge on an Order row reaching ``PAID``.
     """
-    if _course_is_free(course):
+    if course_is_free(course):
         return True
     return Order.objects.filter(
         user=user,
