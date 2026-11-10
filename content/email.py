@@ -10,6 +10,7 @@ saved to the database before this is called.
 import logging
 from django.conf import settings
 import resend
+from ooskillsbackend.mailer import send_email
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +69,7 @@ View and manage all messages in the admin panel.
         """
 
         logger.info(f"[EMAIL] Sending contact notification to {notify_to} via Resend")
-        r = resend.Emails.send({
+        r = send_email({
             "from": settings.DEFAULT_FROM_EMAIL,
             "to": [notify_to],
             "reply_to": contact_message.email,

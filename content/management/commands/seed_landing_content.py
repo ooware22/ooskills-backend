@@ -1,6 +1,6 @@
 """
 Seed the landing-page CMS with sample content (hero, features, FAQ,
-testimonials, site settings) so a fresh database renders a real homepage.
+site settings) so a fresh database renders a real homepage.
 
 Meant for staging / local development. It refuses to run when
 ENVIRONMENT=production unless --force is given.
@@ -22,7 +22,6 @@ from content.models import (
     FeaturesSection,
     HeroSection,
     SiteSettings,
-    Testimonial,
 )
 
 
@@ -44,7 +43,7 @@ HERO = dict(
     secondary_cta_text=t('Voir les formations', 'Browse courses', 'تصفح الدورات'),
     badge_text=t('Nouveau : certificats vérifiables', 'New: verifiable certificates', 'جديد: شهادات قابلة للتحقق'),
     card_title=t('Gestion de projet', 'Project management', 'إدارة المشاريع'),
-    card_subtitle=t('12 modules · Certificat inclus', '12 modules · Certificate included', '12 وحدة · شهادة مشمولة'),
+    card_subtitle=t('Quiz · Certificat de réussite', 'Quizzes · Certificate of completion', 'اختبارات · شهادة إتمام'),
 )
 
 FEATURES_SECTION = dict(
@@ -76,16 +75,6 @@ FAQ_ITEMS = [
     (t('Les cours sont-ils disponibles en arabe ?', 'Are courses available in Arabic?', 'هل الدورات متوفرة بالعربية؟'),
      t('Oui, le site et les cours existent en français, en anglais et en arabe.', 'Yes, the site and courses are available in French, English and Arabic.', 'نعم، الموقع والدورات متوفرة بالفرنسية والإنجليزية والعربية.')),
 ]
-
-TESTIMONIALS = [
-    ('Amine B.', t('Chef de projet', 'Project manager', 'مدير مشاريع'),
-     t('Des cours clairs et un certificat reconnu. Je recommande.', 'Clear courses and a recognised certificate. Highly recommended.', 'دورات واضحة وشهادة معترف بها. أنصح بها.'), 5),
-    ('Sara K.', t('Étudiante', 'Student', 'طالبة'),
-     t('J’ai appris à mon rythme, depuis mon téléphone.', 'I learned at my own pace, from my phone.', 'تعلمت بالوتيرة التي تناسبني من هاتفي.'), 5),
-    ('Yacine M.', t('Entrepreneur', 'Entrepreneur', 'رائد أعمال'),
-     t('Les quiz m’ont aidé à vraiment retenir.', 'The quizzes helped me really retain it.', 'ساعدتني الاختبارات على الحفظ فعلاً.'), 4),
-]
-
 
 class Command(BaseCommand):
     help = 'Create sample landing-page content (staging/dev only). Re-runnable.'
@@ -128,13 +117,9 @@ class Command(BaseCommand):
                 )
             created.append(f'faq ({len(FAQ_ITEMS)} items)')
 
-        if not Testimonial.objects.exists():
-            for order, (name, title, content, rating) in enumerate(TESTIMONIALS):
-                Testimonial.objects.create(
-                    author_name=name, author_title=title, content=content,
-                    rating=rating, order=order, is_active=True,
-                )
-            created.append(f'testimonials ({len(TESTIMONIALS)})')
+        # No sample testimonials: a testimonial shown on the site must come from
+        # a real learner (with their consent), so they are only added by hand
+        # in the admin panel.
 
         site = SiteSettings.get_settings()
         changed = []

@@ -18,7 +18,7 @@ from formation.models import (
     Category, Certificate, Course, CourseMaterial, CourseGift, CourseRating,
     Enrollment, EnrollmentStatus, FinalQuiz, FinalQuizAttempt, FinalQuizAudio,
     Lesson, LessonNote, LessonProgress, Order, OrderItem, OrderStatus,
-    PromoCode, PromoCodeUsage,
+    PaymentMethod, PromoCode, PromoCodeUsage,
     QuizAttempt, Quiz, QuizQuestion, Section, Module, ShareToken, Wishlist,
     MarketingCampaign,
 )
@@ -654,10 +654,22 @@ class OrderSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'user', 'total', 'status', 'created_at', 'updated_at']
 
 
+# Payment methods a customer may pick at checkout. Every one of them goes
+# through Chargily, so an order can only become "paid" once Chargily says so.
+# Other PaymentMethod values (ccp, baridimob, card, free) are never accepted
+# from the client: "free" is set by the server when the total is zero.
+CHECKOUT_PAYMENT_METHODS = [
+    (PaymentMethod.EDAHABIA.value, PaymentMethod.EDAHABIA.label),
+    (PaymentMethod.CIB.value, PaymentMethod.CIB.label),
+]
+
+
 class OrderCreateSerializer(serializers.Serializer):
     """Input for creating an order."""
-    course_ids = serializers.ListField(child=serializers.UUIDField())
-    paymentMethod = serializers.CharField(max_length=30)
+    course_ids = serializers.ListField(
+        child=serializers.UUIDField(), allow_empty=False, max_length=20,
+    )
+    paymentMethod = serializers.ChoiceField(choices=CHECKOUT_PAYMENT_METHODS)
     paymentRef = serializers.CharField(max_length=200, required=False, default='')
     # Optional promo code to apply at checkout
     promo_code = serializers.CharField(max_length=50, required=False, allow_blank=True, default='')
@@ -831,7 +843,9 @@ class CourseGiftSendSerializer(serializers.Serializer):
     course_id = serializers.UUIDField()
     recipient_email = serializers.EmailField()
     message = serializers.CharField(required=False, allow_blank=True, default='')
-    paymentMethod = serializers.CharField(max_length=30, required=False, default='edahabia')
+    paymentMethod = serializers.ChoiceField(
+        choices=CHECKOUT_PAYMENT_METHODS, required=False, default=PaymentMethod.EDAHABIA.value,
+    )
     paymentRef = serializers.CharField(max_length=200, required=False, allow_blank=True, default='')
     promo_code = serializers.CharField(max_length=50, required=False, allow_blank=True, default='')
     use_wallet = serializers.BooleanField(required=False, default=False)

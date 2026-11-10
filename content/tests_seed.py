@@ -38,7 +38,8 @@ class SeedLandingContentTests(TestCase):
         self.assertEqual(HeroSection.objects.filter(is_active=True).count(), 1)
         self.assertEqual(FeatureItem.objects.count(), 4)
         self.assertEqual(FAQItem.objects.count(), 3)
-        self.assertEqual(Testimonial.objects.count(), 3)
+        # Testimonials are never seeded: only real ones, added by hand.
+        self.assertEqual(Testimonial.objects.count(), 0)
 
     def test_public_landing_endpoint_has_data(self):
         seed()

@@ -9,6 +9,7 @@ import logging
 import threading
 
 import resend
+from ooskillsbackend.mailer import send_email
 from django.conf import settings
 
 from gamefication.models import LEVEL_TITLES_I18N
@@ -107,7 +108,7 @@ Voir mon profil : {frontend_url}/dashboard
         """
 
         logger.info(f"[EMAIL] Sending level-up email to {user.email} (level {new_level})")
-        r = resend.Emails.send({
+        r = send_email({
             "from": settings.DEFAULT_FROM_EMAIL,
             "to": [user.email],
             "subject": subject,
@@ -209,7 +210,7 @@ Voir mes certificats : {frontend_url}/dashboard/certificates
         """
 
         logger.info(f"[EMAIL] Sending certificate email to {user.email} for {course_title}")
-        r = resend.Emails.send({
+        r = send_email({
             "from": settings.DEFAULT_FROM_EMAIL,
             "to": [user.email],
             "subject": subject,

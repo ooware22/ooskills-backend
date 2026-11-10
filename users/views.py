@@ -108,6 +108,7 @@ from .serializers import (
     NotificationSerializer,
 )
 from content.permissions import IsAdminOrSuperAdmin
+from .throttles import LoginEmailThrottle
 
 
 # =============================================================================
@@ -233,7 +234,8 @@ class LoginView(TokenObtainPairView):
     """
     permission_classes = [AllowAny]
     serializer_class = CustomTokenObtainPairSerializer
-    throttle_classes = [ScopedRateThrottle]
+    # Per client IP (auth_login) and per targeted account (auth_login_email).
+    throttle_classes = [ScopedRateThrottle, LoginEmailThrottle]
     throttle_scope = 'auth_login'
 
     def post(self, request, *args, **kwargs):

@@ -7,6 +7,7 @@ Sends email to gift recipients with claim link via Resend.
 import logging
 from django.conf import settings
 import resend
+from ooskillsbackend.mailer import send_email
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +107,7 @@ Ce cadeau expire dans 90 jours.
         """
 
         logger.info(f"[EMAIL] Sending gift email to {recipient_email} via Resend")
-        r = resend.Emails.send({
+        r = send_email({
             "from": settings.DEFAULT_FROM_EMAIL,
             "to": [recipient_email],
             "subject": subject,

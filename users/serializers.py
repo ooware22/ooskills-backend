@@ -26,6 +26,26 @@ FILE_SIZE_ERROR_MSG = "La taille du fichier ne doit pas dépasser 5 Mo."
 # AUTHENTICATION SERIALIZERS
 # =============================================================================
 
+INVALID_CREDENTIALS_MSG = 'Email ou mot de passe incorrect.'
+INVALID_NAME_MSG = "Ce champ ne peut pas contenir les caractères < > ou des caractères de contrôle."
+
+
+def validate_person_name(value):
+    """
+    Reject markup and control characters in first / last names.
+
+    Names are printed on certificates (PDF), in e-mails and in the admin, so a
+    value such as ``<script>…`` must never be stored. Letters of any alphabet
+    (Arabic included), spaces, hyphens and apostrophes stay allowed.
+    """
+    if value and (
+        '<' in value or '>' in value
+        or any(ord(ch) < 32 or ord(ch) == 127 for ch in value)
+    ):
+        raise serializers.ValidationError(INVALID_NAME_MSG)
+    return value.strip() if isinstance(value, str) else value
+
+
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
     """
     Custom JWT serializer that uses email instead of username
@@ -55,31 +75,38 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
                 'detail': 'Email et mot de passe sont obligatoires.'
             })
         
-        # Check if user exists
-        try:
-            user = User.objects.get(email=email)
-        except User.DoesNotExist:
-            raise serializers.ValidationError({
-                'detail': 'Email ou mot de passe incorrect.'
-            })
-        
-        # Check if user account is active
+        # Check the password BEFORE revealing anything about the account.
+        # Whether the address is unknown, the password is wrong, or the account
+        # is unverified / suspended / deleted, a caller who does not know the
+        # password always gets the same answer (no account enumeration).
+        user = User.objects.filter(email=email).first()
+        if user is None:
+            # Spend the same time hashing as for a real account, so response
+            # time does not reveal whether the address exists.
+            User().set_password(password)
+            raise serializers.ValidationError({'detail': INVALID_CREDENTIALS_MSG})
+
+        if not user.check_password(password):
+            raise serializers.ValidationError({'detail': INVALID_CREDENTIALS_MSG})
+
+        # From here on the caller has proven they own the account, so its
+        # state can be explained to them.
         if user.status == UserStatus.DELETED:
             raise serializers.ValidationError({
                 'detail': 'Ce compte a été supprimé.'
             })
-        
+
         if user.status == UserStatus.SUSPENDED:
             raise serializers.ValidationError({
                 'detail': 'Ce compte a été suspendu.'
             })
-        
-        # Check if email is verified
+
         if not user.email_verified:
             raise serializers.ValidationError({
-                'detail': 'Votre email n\'est pas encore vérifié. Veuillez vérifier votre boîte de réception.'
+                'detail': "Votre email n'est pas encore vérifié. Veuillez vérifier votre boîte de réception.",
+                'code': 'email_not_verified',
             })
-        
+
         # Authenticate user (checks password)
         authenticated_user = authenticate(
             request=self.context.get('request'),
@@ -88,9 +115,7 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
         )
         
         if authenticated_user is None:
-            raise serializers.ValidationError({
-                'detail': 'Email ou mot de passe incorrect.'
-            })
+            raise serializers.ValidationError({'detail': INVALID_CREDENTIALS_MSG})
         
         if not authenticated_user.is_active:
             raise serializers.ValidationError({
@@ -155,6 +180,12 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
             })
         return attrs
     
+    def validate_first_name(self, value):
+        return validate_person_name(value)
+
+    def validate_last_name(self, value):
+        return validate_person_name(value)
+
     def validate_referral_code(self, value):
         if value:
             try:
@@ -322,6 +353,12 @@ class UserProfileUpdateSerializer(serializers.ModelSerializer):
             'avatar', 'language', 'newsletter_subscribed'
         ]
     
+    def validate_first_name(self, value):
+        return validate_person_name(value)
+
+    def validate_last_name(self, value):
+        return validate_person_name(value)
+
     def validate_phone(self, value):
         if value and not value.startswith(('+213', '0')):
             raise serializers.ValidationError(

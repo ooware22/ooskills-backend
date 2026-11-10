@@ -1102,7 +1102,11 @@ class OrderViewSet(
         order = Order.objects.create(
             user=request.user,
             total=total,
-            paymentMethod=ser.validated_data['paymentMethod'],
+            # A zero-total order (free course, 100 % promo, wallet) is recorded
+            # as "free", never under a payment method that did not take place.
+            paymentMethod=(
+                ser.validated_data['paymentMethod'] if total >= 10 else PaymentMethod.FREE
+            ),
             paymentRef=ser.validated_data.get('paymentRef', ''),
         )
 
@@ -2466,7 +2470,9 @@ def presigned_batch_upload_url_view(request):
 class MarketingCampaignViewSet(viewsets.ModelViewSet):
     queryset = MarketingCampaign.objects.all()
     serializer_class = MarketingCampaignSerializer
-    permission_classes = [IsAdminOrReadOnly]
+    # Admin-only, including reads: the full list contains past and future
+    # campaigns. The public site only needs /active/ below.
+    permission_classes = [IsAdmin]
 
     @action(detail=False, methods=['get'], permission_classes=[AllowAny])
     def active(self, request):

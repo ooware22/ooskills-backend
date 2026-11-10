@@ -13,6 +13,8 @@ silently regress:
     F-05  Share tokens require course access to mint.
 """
 
+from unittest import mock
+
 from django.test import TestCase
 from django.urls import reverse
 from rest_framework.test import APITestCase
@@ -303,3 +305,123 @@ class EnrollmentServiceEntitlementTests(TestCase):
         OrderItem.objects.create(order=order, course=self.paid, price=5000)
         enrollment = self_enroll(self.user, self.paid)
         self.assertEqual(enrollment.status, EnrollmentStatus.ACTIVE)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# K02 — An order only becomes "paid" through Chargily (pre-launch audit, 11/2026)
+# ═════════════════════════════════════════════════════════════════════════════
+
+class OrderPaymentIntegrityTests(AuthzTestBase):
+    """
+    Pins findings FN-02 / FN-03 / S-01 of the November 2026 pre-launch audit:
+
+    * an order with no course is refused instead of being created as "paid";
+    * a payment method the checkout does not offer (baridimob, ccp, card, free)
+      is refused;
+    * a paid course is never marked "paid" at creation — only Chargily can
+      confirm it, whether through the webhook or confirm-payment.
+    """
+    URL = '/api/formation/orders/'
+
+    def _create(self, **body):
+        self.client.force_authenticate(self.user)
+        return self.client.post(self.URL, body, format='json')
+
+    def test_empty_course_list_is_rejected(self):
+        resp = self._create(course_ids=[], paymentMethod='edahabia')
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(Order.objects.count(), 0)
+
+    def test_unoffered_payment_methods_are_rejected(self):
+        for method in ('baridimob', 'ccp', 'card', 'free', 'anything'):
+            with self.subTest(method=method):
+                resp = self._create(
+                    course_ids=[str(self.paid_course.id)], paymentMethod=method,
+                )
+                self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(Order.objects.count(), 0)
+
+    def test_paid_course_stays_pending_until_chargily_confirms(self):
+        with mock.patch(
+            'formation.views.create_chargily_checkout',
+            return_value=('chk_1', 'https://pay.chargily.test/chk_1'),
+        ):
+            resp = self._create(
+                course_ids=[str(self.paid_course.id)], paymentMethod='edahabia',
+            )
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(resp.data['status'], OrderStatus.PENDING)
+        self.assertEqual(resp.data['checkout_url'], 'https://pay.chargily.test/chk_1')
+        self.assertFalse(
+            Enrollment.objects.filter(user=self.user, course=self.paid_course).exists()
+        )
+
+    def test_free_course_order_is_recorded_as_free(self):
+        resp = self._create(
+            course_ids=[str(self.free_course.id)], paymentMethod='edahabia',
+        )
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(resp.data['status'], OrderStatus.PAID)
+        self.assertEqual(resp.data['paymentMethod'], 'free')
+
+    def _pending_order(self, user, checkout_id='chk_1'):
+        order = Order.objects.create(
+            user=user, status=OrderStatus.PENDING, total=3900,
+            chargily_checkout_id=checkout_id,
+        )
+        OrderItem.objects.create(order=order, course=self.paid_course, price=3900)
+        return order
+
+    def test_confirm_payment_does_not_mark_paid_when_chargily_says_unpaid(self):
+        order = self._pending_order(self.user)
+        self.client.force_authenticate(self.user)
+        with mock.patch('formation.views.chargily_client') as chargily:
+            chargily.retrieve_checkout.return_value = {'status': 'pending'}
+            resp = self.client.post(f'{self.URL}{order.id}/confirm-payment/')
+        self.assertEqual(resp.status_code, status.HTTP_202_ACCEPTED)
+        order.refresh_from_db()
+        self.assertEqual(order.status, OrderStatus.PENDING)
+        self.assertFalse(
+            Enrollment.objects.filter(user=self.user, course=self.paid_course).exists()
+        )
+
+    def test_confirm_payment_without_checkout_reference_is_refused(self):
+        order = self._pending_order(self.user, checkout_id='')
+        self.client.force_authenticate(self.user)
+        resp = self.client.post(f'{self.URL}{order.id}/confirm-payment/')
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        order.refresh_from_db()
+        self.assertEqual(order.status, OrderStatus.PENDING)
+
+    def test_confirm_payment_on_another_users_order_is_not_found(self):
+        order = self._pending_order(self.other)
+        self.client.force_authenticate(self.user)
+        with mock.patch('formation.views.chargily_client') as chargily:
+            chargily.retrieve_checkout.return_value = {'status': 'paid'}
+            resp = self.client.post(f'{self.URL}{order.id}/confirm-payment/')
+        self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
+        order.refresh_from_db()
+        self.assertEqual(order.status, OrderStatus.PENDING)
+
+    def test_confirm_payment_enrolls_once_chargily_confirms(self):
+        order = self._pending_order(self.user)
+        self.client.force_authenticate(self.user)
+        with mock.patch('formation.views.chargily_client') as chargily:
+            chargily.retrieve_checkout.return_value = {'status': 'paid', 'id': 'chk_1'}
+            resp = self.client.post(f'{self.URL}{order.id}/confirm-payment/')
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        order.refresh_from_db()
+        self.assertEqual(order.status, OrderStatus.PAID)
+        self.assertTrue(
+            Enrollment.objects.filter(user=self.user, course=self.paid_course).exists()
+        )
+
+    def test_gift_with_unoffered_payment_method_is_rejected(self):
+        self.client.force_authenticate(self.user)
+        resp = self.client.post('/api/formation/gifts/send/', {
+            'course_id': str(self.paid_course.id),
+            'recipient_email': 'friend@test.com',
+            'paymentMethod': 'baridimob',
+        }, format='json')
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(Order.objects.count(), 0)
