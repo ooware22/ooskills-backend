@@ -223,6 +223,54 @@ Visitez: {settings.FRONTEND_URL}
         return False
 
 
+def send_account_exists_email(user):
+    """
+    Someone tried to sign up with the address of an existing, verified account.
+
+    The sign-up form answers the same way as for a new address (no account
+    enumeration), so the real owner is told here instead, with the ways back in.
+    """
+    try:
+        _init_resend()
+        frontend_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:3000').rstrip('/')
+        name = user.first_name or user.email.split('@')[0]
+        login_url = f"{frontend_url}/auth/signin"
+        reset_url = f"{frontend_url}/auth/forgot-password"
+        html_message = f"""
+        <!DOCTYPE html>
+        <html><head><meta charset="utf-8"></head>
+        <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+          <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
+            <h2 style="color: #002147;">Vous avez déjà un compte OOSkills</h2>
+            <p>Bonjour {name},</p>
+            <p>Quelqu'un (probablement vous) a essayé de créer un compte avec cette adresse e-mail.
+               Un compte existe déjà : il n'a pas été modifié.</p>
+            <p><a href="{login_url}" style="color: #b8860b;">Se connecter</a> ·
+               <a href="{reset_url}" style="color: #b8860b;">Mot de passe oublié ?</a></p>
+            <p style="font-size: 12px; color: #666;">Si ce n'était pas vous, vous pouvez ignorer cet e-mail.</p>
+          </div>
+        </body></html>
+        """
+        plain_message = (
+            f"Bonjour {name},\n\n"
+            "Quelqu'un (probablement vous) a essayé de créer un compte avec cette adresse e-mail. "
+            "Un compte existe déjà : il n'a pas été modifié.\n\n"
+            f"Se connecter : {login_url}\nMot de passe oublié : {reset_url}\n\n"
+            "Si ce n'était pas vous, vous pouvez ignorer cet e-mail."
+        )
+        send_email({
+            "from": settings.DEFAULT_FROM_EMAIL,
+            "to": [user.email],
+            "subject": "Vous avez déjà un compte - OOSkills",
+            "html": html_message,
+            "text": plain_message,
+        })
+        return True
+    except Exception as e:
+        logger.error(f"[EMAIL] Account-exists notice failed: {type(e).__name__}: {e}")
+        return False
+
+
 def verify_email_token(token):
     """
     Verify email token and activate user.

@@ -251,6 +251,9 @@ REST_FRAMEWORK = {
         'auth_refresh': '30/min',
         'auth_email': '5/min',        # resend verification
         'auth_password_reset': '3/min',
+        'auth_password_change': '5/min',  # guessing the current password
+        'certificate_verify': '30/min',   # public lookup by code
+        'certificate_pdf': '10/min',      # public PDF rendering (heavy)
         # API actions with real-world cost
         'enrollment': '20/hour',
         'quiz_attempt': '10/hour',
@@ -327,14 +330,25 @@ AUTHENTICATION_BACKENDS = [
 
 from datetime import timedelta
 
+# Version of the terms of service / privacy policy that users accept at
+# sign-up. Bump it whenever the published texts change.
+TERMS_VERSION = os.environ.get('TERMS_VERSION', '2026-11-09')
+
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=60),
+    # Short-lived: a token that leaked or outlived a logout is useless quickly.
+    # The frontend refreshes it silently from the HttpOnly cookie.
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=15),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
     'ROTATE_REFRESH_TOKENS': True,
     'BLACKLIST_AFTER_ROTATION': False,  # Stateless JWT - no database storage
     'AUTH_HEADER_TYPES': ('Bearer',),
     'USER_ID_FIELD': 'id',  # UUID field
     'USER_ID_CLAIM': 'user_id',
+    # Every token carries a fingerprint of the password hash. Changing or
+    # resetting the password changes the hash, so all tokens issued before it
+    # (other browsers, a stolen token) stop working at once.
+    'CHECK_REVOKE_TOKEN': True,
+    'REVOKE_TOKEN_CLAIM': 'hash_password',
 }
 
 

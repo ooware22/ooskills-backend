@@ -20,6 +20,7 @@ from rest_framework.throttling import ScopedRateThrottle
 from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import TokenError, InvalidToken
+from rest_framework_simplejwt.utils import get_md5_hash_password
 from django.contrib.auth import update_session_auth_hash
 
 import logging
@@ -83,7 +84,10 @@ def _clear_refresh_cookie(response):
 
 from .storage import upload_avatar, delete_avatar
 from .avatar_serializer import AvatarUploadSerializer
-from .email import send_verification_email, verify_email_token, send_password_reset_email, verify_password_reset_token
+from .email import (
+    send_verification_email, verify_email_token, send_password_reset_email,
+    verify_password_reset_token, send_account_exists_email,
+)
 
 from .models import User, UserRole, UserStatus, AuthProvider, ReferralCode, Referral, ALGERIAN_WILAYAS, AccountDeletionRequest, DeletionRequestStatus, Notification
 from .serializers import (
@@ -126,33 +130,44 @@ class RegisterView(generics.CreateAPIView):
     permission_classes = [AllowAny]
     authentication_classes = []
     serializer_class = UserRegistrationSerializer
-    parser_classes = [MultiPartParser, FormParser]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = 'auth_register'
-    
+
+    REGISTERED_MSG = (
+        "Inscription enregistrée. Si l'adresse est valide, vous allez recevoir "
+        "un e-mail pour activer votre compte."
+    )
+
     def create(self, request, *args, **kwargs):
+        """
+        Create the account and e-mail an activation link.
+
+        - No session is opened here: the user logs in after clicking the link
+          (audit FN-06 / S-08 / UX-09).
+        - The answer is identical whether the address is new or already
+          registered (audit S-04). An existing owner receives an e-mail instead:
+          a new activation link if the account is not verified yet, otherwise
+          a note that the account already exists.
+        """
+        import threading
+
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        user = serializer.save()
-        
-        # Send verification email in background (non-blocking)
-        import threading
-        threading.Thread(target=send_verification_email, args=(user,), daemon=True).start()
-        
-        # Generate JWT tokens for the new user
-        refresh = RefreshToken.for_user(user)
-        access = str(refresh.access_token)
+        email = serializer.validated_data['email']
 
-        # Refresh token goes into an HttpOnly cookie — JS cannot read/modify it.
-        response = Response({
-            'user': UserProfileSerializer(user).data,
-            'tokens': {
-                'access': access,
-                # 'refresh' intentionally omitted from body
-            },
-            'message': 'Inscription réussie. Veuillez vérifier votre email.'
-        }, status=status.HTTP_201_CREATED)
-        return _set_refresh_cookie(response, str(refresh))
+        existing = User.objects.filter(email__iexact=email).first()
+        if existing is None:
+            user = serializer.save()
+            threading.Thread(target=send_verification_email, args=(user,), daemon=True).start()
+        elif existing.status != UserStatus.DELETED:
+            target = send_verification_email if not existing.email_verified else send_account_exists_email
+            threading.Thread(target=target, args=(existing,), daemon=True).start()
+
+        return Response(
+            {'message': self.REGISTERED_MSG, 'email': email},
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class VerifyEmailView(APIView):
@@ -205,23 +220,14 @@ class ResendVerificationView(APIView):
                 'error': 'Email requis.'
             }, status=status.HTTP_400_BAD_REQUEST)
         
-        try:
-            user = User.objects.get(email=email)
-        except User.DoesNotExist:
-            # Don't reveal if email exists
-            return Response({
-                'message': 'Si cet email existe, un lien de vérification a été envoyé.'
-            })
-        
-        if user.email_verified:
-            return Response({
-                'message': 'Cet email est déjà vérifié.'
-            })
-        
-        send_verification_email(user)
-        
+        # Same answer whether the address is unknown, pending or already
+        # verified: nothing about the account is revealed.
+        user = User.objects.filter(email__iexact=str(email).strip()).first()
+        if user is not None and not user.email_verified and user.status != UserStatus.DELETED:
+            send_verification_email(user)
+
         return Response({
-            'message': 'Si cet email existe, un lien de vérification a été envoyé.'
+            'message': 'Si un compte en attente existe pour cet email, un lien de vérification a été envoyé.'
         })
 
 
@@ -288,30 +294,43 @@ class ProfileView(generics.RetrieveUpdateAPIView):
 
 class ChangePasswordView(generics.UpdateAPIView):
     """
-    POST /api/auth/change-password/
-    
-    Change user's password.
+    POST or PUT /api/auth/change-password/
+
+    Change the password of the logged-in user.
+
+    Every token issued before the change stops working (SIMPLE_JWT
+    CHECK_REVOKE_TOKEN), so other browsers are logged out. The current browser
+    receives a fresh access token in the body and a fresh refresh cookie, so the
+    user stays logged in here.
     """
     permission_classes = [IsAuthenticated]
     serializer_class = ChangePasswordSerializer
-    
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'auth_password_change'
+
     def get_object(self):
         return self.request.user
-    
+
+    def post(self, request, *args, **kwargs):
+        return self.update(request, *args, **kwargs)
+
     def update(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        
+
         user = self.get_object()
         user.set_password(serializer.validated_data['new_password'])
-        user.save()
-        
-        # Update session to prevent logout
+        user.save(update_fields=['password', 'updated_at'])
+
+        # Keep the Django admin session (if any) valid.
         update_session_auth_hash(request, user)
-        
-        return Response({
-            'message': 'Mot de passe modifié avec succès.'
+
+        refresh = RefreshToken.for_user(user)
+        response = Response({
+            'message': 'Mot de passe modifié avec succès.',
+            'tokens': {'access': str(refresh.access_token)},
         })
+        return _set_refresh_cookie(response, str(refresh))
 
 
 class ForgotPasswordView(APIView):
@@ -441,6 +460,12 @@ class CookieTokenRefreshView(APIView):
             )
         try:
             token = RefreshToken(refresh_str)
+            # A refresh token issued before the last password change (or for a
+            # deleted / deactivated account) must not mint new access tokens.
+            user = User.objects.filter(id=token.get('user_id')).first()
+            if (user is None or not user.is_active
+                    or token.get('hash_password') != get_md5_hash_password(user.password)):
+                raise InvalidToken('Session expirée. Veuillez vous reconnecter.')
             access = str(token.access_token)
             # Rotate: generate a new refresh token and blacklist the old one
             new_refresh = str(token)

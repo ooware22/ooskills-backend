@@ -163,15 +163,40 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
         allow_blank=True
     )
     avatar = serializers.ImageField(required=False, allow_null=True, write_only=True)
-    
+    language = serializers.ChoiceField(
+        choices=['fr', 'en', 'ar'], required=False, default='fr',
+    )
+    # Recorded on the account (audit LAN-19 / LAN-20).
+    accept_terms = serializers.BooleanField(write_only=True, required=True)
+    age_confirmed = serializers.BooleanField(write_only=True, required=True)
+
     class Meta:
         model = User
         fields = [
             'email', 'password', 'password_confirm',
             'first_name', 'last_name', 'phone', 'wilaya',
-            'referral_code', 'newsletter_subscribed', 'avatar'
+            'referral_code', 'newsletter_subscribed', 'avatar',
+            'language', 'accept_terms', 'age_confirmed',
         ]
-    
+        # No "this e-mail is already used" error: RegisterView answers the
+        # same way for new and existing addresses (no account enumeration).
+        extra_kwargs = {'email': {'validators': []}}
+
+    def validate_accept_terms(self, value):
+        if value is not True:
+            raise serializers.ValidationError(
+                "Vous devez accepter les conditions d'utilisation et la politique de confidentialité."
+            )
+        return value
+
+    def validate_age_confirmed(self, value):
+        if value is not True:
+            raise serializers.ValidationError("Vous devez avoir au moins 16 ans pour créer un compte.")
+        return value
+
+    def validate_email(self, value):
+        return value.strip().lower()
+
     def validate(self, attrs):
         if attrs['password'] != attrs.pop('password_confirm'):
             error_msg = MISMATCH_ERROR_MSG
@@ -209,8 +234,13 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
         return value
     
     def create(self, validated_data):
+        from django.conf import settings
+        from django.utils import timezone
+
         referral_code_str = validated_data.pop('referral_code', None)
         avatar_file = validated_data.pop('avatar', None)
+        validated_data.pop('accept_terms', None)
+        validated_data.pop('age_confirmed', None)
         email = validated_data.get('email')
         password = validated_data.get('password')
         
@@ -241,6 +271,10 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
             phone=validated_data.get('phone', ''),
             wilaya=validated_data.get('wilaya', ''),
             newsletter_subscribed=validated_data.get('newsletter_subscribed', False),
+            language=validated_data.get('language', 'fr'),
+            terms_accepted_at=timezone.now(),
+            terms_version=getattr(settings, 'TERMS_VERSION', ''),
+            age_confirmed=True,
         )
         
         # Handle referral
@@ -317,7 +351,11 @@ class UserProfileSerializer(serializers.ModelSerializer):
     display_name = serializers.ReadOnlyField()
     avatar_display_url = serializers.ReadOnlyField()
     referral_code = serializers.SerializerMethodField()
-    
+    # False for accounts created with Google/Facebook that never set a password:
+    # the settings page then explains how to create one instead of asking for
+    # a "current password" the user does not have.
+    has_password = serializers.SerializerMethodField()
+
     class Meta:
         model = User
         fields = [
@@ -327,7 +365,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'role', 'status', 'email_verified',
             'language', 'newsletter_subscribed',
             'date_joined', 'last_login',
-            'referral_code', 'referral_balance'
+            'referral_code', 'referral_balance', 'has_password',
         ]
         read_only_fields = [
             'id', 'email', 'role', 'status', 'email_verified',
@@ -339,6 +377,9 @@ class UserProfileSerializer(serializers.ModelSerializer):
             return obj.referral_code.code
         except ReferralCode.DoesNotExist:
             return None
+
+    def get_has_password(self, obj):
+        return obj.has_usable_password()
 
 
 class UserProfileUpdateSerializer(serializers.ModelSerializer):
