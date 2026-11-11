@@ -40,6 +40,9 @@ jobs:
               # Demo categories and courses for testing (audit K01). Only
               # creates what is missing; refuses to run on a production env.
               venv/bin/python manage.py seed_demo_courses
+              # Verified account used by the automated end-to-end test, reset
+              # to a new learner on each deploy. Skipped when the secret is unset.
+              E2E_USER_PASSWORD="${{ secrets.STAGING_E2E_PASSWORD }}" venv/bin/python manage.py ensure_e2e_user --reset
               venv/bin/python manage.py collectstatic --noinput
             '
 
