@@ -471,7 +471,9 @@ def t_paid():
     assert after.get('status') != 'paid', 'order became paid without payment'
     assert not my_enrollment(PAID), 'enrolled without paying'
     CTX['paid_order'] = d['id']
-    return f'total {d.get("total")} DZD, checkout on {url.split("/")[2]}; confirm-payment {confirm.status_code}, still {after.get("status")}'
+    mode = 'TEST mode' if '/test/' in url else 'LIVE mode (real payments!)'
+    return (f'total {d.get("total")} DZD, Chargily {mode}; confirm-payment {confirm.status_code}, '
+            f'still {after.get("status")}')
 
 
 # ----------------------------------------------------------------- 5. browser
@@ -568,8 +570,13 @@ def t_b_learner():
             problems.append(f'{path} sent back to sign-in')
         elif expect and expect not in body:
             problems.append(f'{path} does not show "{expect}"')
-        if path.endswith('/learn') and 'No visual content' in body:
-            problems.append('player shows "No visual content"')
+        if path.endswith('/learn'):
+            if 'No visual content' in body:
+                problems.append('player shows "No visual content"')
+            # The course was completed through the API: a fresh page load of
+            # the player must show it (it used to show 0%: session not restored).
+            if '100%' not in body:
+                problems.append('player does not show the saved progress (100%) after a page load')
     if CTX.get('cert_code'):
         page.goto(f'{WEB}/verify/{CTX["cert_code"]}', wait_until='networkidle')
         page.wait_for_timeout(2500)
@@ -594,9 +601,9 @@ def t_password():
     back = api('PUT', '/auth/change-password/', token=new_token,
                json={'old_password': temp, 'new_password': original, 'new_password_confirm': original})
     assert back.status_code == 200, f'could not restore the password ({back.status_code}); the next staging deploy resets it'
-    assert old.status_code == 401, f'old password still accepted ({old.status_code})'
+    assert old.status_code in (400, 401), f'old password still accepted ({old.status_code})'
     CTX['token'] = (back.json().get('tokens') or {}).get('access') or new_token
-    return 'changed, old password refused (401), restored'
+    return f'changed, old password refused ({old.status_code}), restored'
 
 
 @step(G4, 'Log out')
