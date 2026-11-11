@@ -1663,11 +1663,14 @@ class FinalQuizViewSet(viewsets.GenericViewSet):
 class CertificateViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = CertificateSerializer
     permission_classes = [IsAuthenticated, IsOwnerOrAdmin]
+    # Used by the ScopedRateThrottle of the public verify action only.
+    throttle_scope = 'certificate_verify'
 
     def get_queryset(self):
         return Certificate.objects.filter(user=self.request.user).select_related('course', 'user')
 
-    @action(detail=False, methods=['get'], url_path='verify/(?P<code>[^/.]+)')
+    @action(detail=False, methods=['get'], url_path='verify/(?P<code>[^/.]+)',
+            throttle_classes=[ScopedRateThrottle])
     def verify(self, request, code=None):
         """Public endpoint to verify a certificate by its code (cached)."""
         key = certificate_verify_key(code)
@@ -2227,14 +2230,22 @@ class CourseGiftViewSet(viewsets.GenericViewSet):
 from django.http import HttpResponse
 from rest_framework.decorators import api_view, permission_classes, throttle_classes
 from rest_framework.permissions import IsAuthenticated, AllowAny
-from rest_framework.throttling import AnonRateThrottle
+from rest_framework.throttling import AnonRateThrottle, SimpleRateThrottle
 from asgiref.sync import async_to_sync
 from .pdf_generator import generate_certificate_pdf, generate_merged_certificate_pdf
 
 
+class _CertificatePdfThrottle(SimpleRateThrottle):
+    """Public PDF rendering is heavy: limit it per client, logged in or not."""
+    scope = 'certificate_pdf'
+
+    def get_cache_key(self, request, view):
+        return self.cache_format % {'scope': self.scope, 'ident': self.get_ident(request)}
+
+
 @api_view(['GET'])
 @permission_classes([AllowAny])
-@throttle_classes([AnonRateThrottle])
+@throttle_classes([AnonRateThrottle, _CertificatePdfThrottle])
 def download_certificate_pdf_view(request, code):
     """
     Download a single-course certificate as a high-quality PDF.

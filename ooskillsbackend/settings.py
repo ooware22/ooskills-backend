@@ -252,6 +252,8 @@ REST_FRAMEWORK = {
         'auth_email': '5/min',        # resend verification
         'auth_password_reset': '3/min',
         'auth_password_change': '5/min',  # guessing the current password
+        'certificate_verify': '30/min',   # public lookup by code
+        'certificate_pdf': '10/min',      # public PDF rendering (heavy)
         # API actions with real-world cost
         'enrollment': '20/hour',
         'quiz_attempt': '10/hour',
@@ -328,8 +330,14 @@ AUTHENTICATION_BACKENDS = [
 
 from datetime import timedelta
 
+# Version of the terms of service / privacy policy that users accept at
+# sign-up. Bump it whenever the published texts change.
+TERMS_VERSION = os.environ.get('TERMS_VERSION', '2026-11-09')
+
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=60),
+    # Short-lived: a token that leaked or outlived a logout is useless quickly.
+    # The frontend refreshes it silently from the HttpOnly cookie.
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=15),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
     'ROTATE_REFRESH_TOKENS': True,
     'BLACKLIST_AFTER_ROTATION': False,  # Stateless JWT - no database storage

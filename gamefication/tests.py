@@ -305,9 +305,20 @@ class SignalTests(GamificationTestBase):
 
 class LeaderboardTests(GamificationTestBase):
 
+    def _opt_in(self, *users):
+        # Being on the leaderboard is opt-in (audit S-14 / LAN-21).
+        UserXP.objects.filter(user__in=users).update(visible_on_leaderboard=True)
+
+    def test_new_users_are_hidden_until_they_opt_in(self):
+        award_xp(self.user, 200, XPSourceType.BONUS, 'ref-1')
+        self.assertFalse(UserXP.objects.get(user=self.user).visible_on_leaderboard)
+        refresh_leaderboard(LeaderboardPeriod.ALLTIME)
+        self.assertEqual(list(get_leaderboard(LeaderboardPeriod.ALLTIME)), [])
+
     def test_refresh_alltime_leaderboard(self):
         award_xp(self.user, 200, XPSourceType.BONUS, 'ref-1')
         award_xp(self.user2, 100, XPSourceType.BONUS, 'ref-2')
+        self._opt_in(self.user, self.user2)
 
         refresh_leaderboard(LeaderboardPeriod.ALLTIME)
         entries = list(get_leaderboard(LeaderboardPeriod.ALLTIME))
@@ -321,6 +332,7 @@ class LeaderboardTests(GamificationTestBase):
 
     def test_refresh_weekly_leaderboard(self):
         award_xp(self.user, 50, XPSourceType.BONUS, 'ref-1')
+        self._opt_in(self.user)
         refresh_leaderboard(LeaderboardPeriod.WEEKLY)
         entries = list(get_leaderboard(LeaderboardPeriod.WEEKLY))
         self.assertGreaterEqual(len(entries), 1)
@@ -329,11 +341,13 @@ class LeaderboardTests(GamificationTestBase):
         """Refreshing the same period multiple times should not duplicate rows."""
         award_xp(self.user, 200, XPSourceType.BONUS, 'ref-1')
         award_xp(self.user2, 100, XPSourceType.BONUS, 'ref-2')
+        self._opt_in(self.user, self.user2)
 
         refresh_leaderboard(LeaderboardPeriod.ALLTIME)
         refresh_leaderboard(LeaderboardPeriod.ALLTIME)
 
         entries = list(get_leaderboard(LeaderboardPeriod.ALLTIME))
+        self.assertEqual(len(entries), 2)
         user_period_pairs = {(e.user_id, e.period) for e in entries}
         self.assertEqual(len(entries), len(user_period_pairs))
 

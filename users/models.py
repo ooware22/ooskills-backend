@@ -356,6 +356,19 @@ class User(AbstractBaseUser, PermissionsMixin):
         'Abonné newsletter',
         default=False
     )
+
+    # Consent recorded at sign-up (audit LAN-19 / LAN-20): which version of the
+    # terms the user accepted, when, and that they declared the minimum age.
+    terms_accepted_at = models.DateTimeField(
+        'CGU acceptées le', null=True, blank=True,
+    )
+    terms_version = models.CharField(
+        'Version des CGU acceptée', max_length=40, blank=True, default='',
+    )
+    age_confirmed = models.BooleanField(
+        'Âge minimum déclaré', default=False,
+        help_text="L'utilisateur a déclaré avoir l'âge minimum requis par les CGU.",
+    )
     
     # Referral balance (wallet for parrainage rewards in DZD)
     referral_balance = models.DecimalField(
