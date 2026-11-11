@@ -37,6 +37,9 @@ jobs:
               git reset --hard origin/staging
               venv/bin/pip install -q -r requirements.txt
               venv/bin/python manage.py migrate --noinput
+              # Demo categories and courses for testing (audit K01). Only
+              # creates what is missing; refuses to run on a production env.
+              venv/bin/python manage.py seed_demo_courses
               venv/bin/python manage.py collectstatic --noinput
             '
 
