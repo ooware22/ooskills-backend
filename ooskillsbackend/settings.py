@@ -454,7 +454,8 @@ CMS_DEFAULT_LANGUAGE = 'fr'
 
 RESEND_API_KEY = os.environ.get('RESEND_API_KEY', '')
 DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', 'resend@ooskills.com')
-CONTACT_NOTIFICATION_EMAIL = os.environ.get('CONTACT_NOTIFICATION_EMAIL', 'sbboxmail3@gmail.com')
+# Where contact-form notifications go (Cloudflare forwards it to the team).
+CONTACT_NOTIFICATION_EMAIL = os.environ.get('CONTACT_NOTIFICATION_EMAIL', 'contact@ooskills.com')
 
 # Recipients allowed to receive mail from this environment (see
 # ooskillsbackend/mailer.py). Empty = no restriction (production). On staging,
